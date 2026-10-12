@@ -54,7 +54,8 @@ Meet **Mochi**: a soft little squircle with big eyes that pops out of your notch
 - 👗 **Dress Mochi up** — right-click him for the wardrobe. He also dresses up for the seasons on his own.
 - ⌨️ **Keyboard shortcuts** — open the chat, jump to an alert or a terminal, switch pills, mute, send Mochi to the desktop or open the wardrobe from anywhere; all customizable in Settings → Shortcuts.
 - 🎭 **A real character** — idle breathing, blinks, eyes on a sphere that follow your mouse, emotes, 28 handcrafted sounds, a greeting on launch.
-- 🔊 **Your own sounds** *(macOS)* — drop a file named like one of Mochi's sounds (`finish.wav`, `approval.mp3`…) in Settings → General → Sound → **Open sounds folder** to replace it.
+- 🔊 **Your own sounds** *(macOS)* — drop a file named like one of Mochi's sounds (`finish.wav`, `approval.mp3`…) in Settings → General → Sound & Haptics → **Open sounds folder** to replace it.
+- 📳 **Force Touch haptics** *(macOS)* — feel a crisp tactile click on your trackpad when expanding or closing the island, or swiping between days in the calendar; customize triggers, feedback patterns (Alignment, Generic) and intensities (Light, Medium, Strong) independently in Settings → General → Sound & Haptics.
 - 🗣️ **« OK Coucou »** *(macOS, GitHub build)* — talk to Mochi like Jarvis. Say « OK Coucou », then ask: « how much did I make on Stripe today? », « swap GitHub for Stripe », « play some Daft Punk », « who won the game last night? », « send an email to Enzo to tell him the image is ready ». Claude is the brain (your own Anthropic API key, set in Settings → Chat); speech recognition runs on your Mac, and only your words and the data Coucou reads to answer go to Anthropic, never audio. Mochi listens, thinks and answers out loud; emails open in the notch and leave only when you click Send. Settings → Voice.
 - 🎙️ **Dictate in the chat** *(macOS, GitHub build)* — click the mic next to the chat field and talk in any of your languages (Coucou picks the one you spoke, or right-click the mic to choose); speech recognition runs on your Mac when it supports it.
 - 🫥 **Invisible when idle** — hides away when nothing is running, peeks out when you hover the notch (the top edge of the screen on Windows and Linux).
@@ -281,6 +282,7 @@ Click the Coucou icon in the menu bar (macOS) or in the system tray (Windows, Li
 | **Active pills** *(macOS)* | choose which tools and agents appear in the island | Settings → Active pills |
 | **Island tabs** *(macOS)* | choose which tabs appear in the notch header (Home, Chat, Calendar, Files) | Settings → Tabs |
 | **Calendar scroll speed** *(macOS)* | configure separate trackpad and mouse wheel scroll speeds for calendar day switching | Settings → General |
+| **Sound & Haptics** *(macOS)* | sounds, custom sound folder, Force Touch haptic pattern and intensity | Settings → General |
 | Stripe, n8n, GitHub, Vercel, Resend, Notion, Cal.com | the service pills | Keychain / Windows Credential Manager / Secret Service, all optional |
 
 If Coucou isn't running, the hook exits immediately: **Claude Code is never blocked.**

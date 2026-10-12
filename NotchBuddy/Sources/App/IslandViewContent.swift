@@ -5142,12 +5142,14 @@ final class CalendarService: ObservableObject {
         guard let next = Calendar.current.date(byAdding: .day, value: 1, to: selectedDate) else { return }
         transitionDirection = .forward
         select(date: next)
+        HapticFeedbackHelper.performCalendarSwipe()
     }
 
     func selectPreviousDay() {
         guard let prev = Calendar.current.date(byAdding: .day, value: -1, to: selectedDate) else { return }
         transitionDirection = .backward
         select(date: prev)
+        HapticFeedbackHelper.performCalendarSwipe()
     }
 
     func selectToday() {

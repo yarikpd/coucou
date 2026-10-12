@@ -294,7 +294,7 @@ struct SettingsView: View {
             .padding(6)
         }
 
-        GroupBox("Sound") {
+        GroupBox(String(localized: "Sound & Haptics")) {
             VStack(alignment: .leading, spacing: 10) {
                 Toggle("Enable sounds", isOn: $state.soundEnabled)
                 HStack(spacing: 8) {
@@ -324,6 +324,175 @@ struct SettingsView: View {
                     .font(.system(size: 11))
                     .foregroundColor(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
+
+                Divider()
+
+                Toggle(String(localized: "Haptic feedback on trackpad"), isOn: $state.hapticsEnabled)
+
+                if state.hapticsEnabled {
+                    VStack(alignment: .leading, spacing: 12) {
+                        // Open section
+                        VStack(alignment: .leading, spacing: 8) {
+                            Toggle(String(localized: "When expanding the island"), isOn: $state.hapticOpenEnabled)
+                                .font(.system(size: 12, weight: .medium))
+
+                            if state.hapticOpenEnabled {
+                                HStack(spacing: 8) {
+                                    Text(String(localized: "Feedback pattern"))
+                                        .frame(width: 120, alignment: .leading)
+                                    Picker("", selection: $state.hapticOpenType) {
+                                        ForEach(HapticFeedbackType.allCases) { type in
+                                            Text(type.displayName).tag(type)
+                                        }
+                                    }
+                                    .labelsHidden()
+                                    .pickerStyle(.menu)
+                                    .frame(maxWidth: 200)
+                                    .onChange(of: state.hapticOpenType) { _, newType in
+                                        HapticFeedbackHelper.perform(type: newType, intensity: state.hapticOpenIntensity)
+                                    }
+                                }
+
+                                HStack(spacing: 8) {
+                                    Text(String(localized: "Intensity"))
+                                        .frame(width: 120, alignment: .leading)
+                                    Picker("", selection: $state.hapticOpenIntensity) {
+                                        ForEach(HapticFeedbackIntensity.allCases) { intensity in
+                                            Text(intensity.displayName).tag(intensity)
+                                        }
+                                    }
+                                    .labelsHidden()
+                                    .pickerStyle(.segmented)
+                                    .frame(maxWidth: 200)
+                                    .onChange(of: state.hapticOpenIntensity) { _, newIntensity in
+                                        HapticFeedbackHelper.perform(type: state.hapticOpenType, intensity: newIntensity)
+                                    }
+
+                                    Button(action: {
+                                        HapticFeedbackHelper.performOpen()
+                                    }) {
+                                        Image(systemName: "hand.tap.fill")
+                                            .font(.system(size: 11))
+                                    }
+                                    .help(String(localized: "Test haptic feedback"))
+                                    .buttonStyle(.bordered)
+                                }
+                            }
+                        }
+                        .padding(8)
+                        .background(Color.white.opacity(0.03))
+                        .cornerRadius(6)
+
+                        // Close section
+                        VStack(alignment: .leading, spacing: 8) {
+                            Toggle(String(localized: "When collapsing (pointer exits)"), isOn: $state.hapticCloseEnabled)
+                                .font(.system(size: 12, weight: .medium))
+
+                            if state.hapticCloseEnabled {
+                                HStack(spacing: 8) {
+                                    Text(String(localized: "Feedback pattern"))
+                                        .frame(width: 120, alignment: .leading)
+                                    Picker("", selection: $state.hapticCloseType) {
+                                        ForEach(HapticFeedbackType.allCases) { type in
+                                            Text(type.displayName).tag(type)
+                                        }
+                                    }
+                                    .labelsHidden()
+                                    .pickerStyle(.menu)
+                                    .frame(maxWidth: 200)
+                                    .onChange(of: state.hapticCloseType) { _, newType in
+                                        HapticFeedbackHelper.perform(type: newType, intensity: state.hapticCloseIntensity)
+                                    }
+                                }
+
+                                HStack(spacing: 8) {
+                                    Text(String(localized: "Intensity"))
+                                        .frame(width: 120, alignment: .leading)
+                                    Picker("", selection: $state.hapticCloseIntensity) {
+                                        ForEach(HapticFeedbackIntensity.allCases) { intensity in
+                                            Text(intensity.displayName).tag(intensity)
+                                        }
+                                    }
+                                    .labelsHidden()
+                                    .pickerStyle(.segmented)
+                                    .frame(maxWidth: 200)
+                                    .onChange(of: state.hapticCloseIntensity) { _, newIntensity in
+                                        HapticFeedbackHelper.perform(type: state.hapticCloseType, intensity: newIntensity)
+                                    }
+
+                                    Button(action: {
+                                        HapticFeedbackHelper.performClose()
+                                    }) {
+                                        Image(systemName: "hand.tap.fill")
+                                            .font(.system(size: 11))
+                                    }
+                                    .help(String(localized: "Test haptic feedback"))
+                                    .buttonStyle(.bordered)
+                                }
+                            }
+                        }
+                        .padding(8)
+                        .background(Color.white.opacity(0.03))
+                        .cornerRadius(6)
+
+                        // Calendar swipe section
+                        VStack(alignment: .leading, spacing: 8) {
+                            Toggle(String(localized: "When swiping days in Calendar"), isOn: $state.hapticCalendarSwipeEnabled)
+                                .font(.system(size: 12, weight: .medium))
+
+                            if state.hapticCalendarSwipeEnabled {
+                                HStack(spacing: 8) {
+                                    Text(String(localized: "Feedback pattern"))
+                                        .frame(width: 120, alignment: .leading)
+                                    Picker("", selection: $state.hapticCalendarSwipeType) {
+                                        ForEach(HapticFeedbackType.allCases) { type in
+                                            Text(type.displayName).tag(type)
+                                        }
+                                    }
+                                    .labelsHidden()
+                                    .pickerStyle(.menu)
+                                    .frame(maxWidth: 200)
+                                    .onChange(of: state.hapticCalendarSwipeType) { _, newType in
+                                        HapticFeedbackHelper.perform(type: newType, intensity: state.hapticCalendarSwipeIntensity)
+                                    }
+                                }
+
+                                HStack(spacing: 8) {
+                                    Text(String(localized: "Intensity"))
+                                        .frame(width: 120, alignment: .leading)
+                                    Picker("", selection: $state.hapticCalendarSwipeIntensity) {
+                                        ForEach(HapticFeedbackIntensity.allCases) { intensity in
+                                            Text(intensity.displayName).tag(intensity)
+                                        }
+                                    }
+                                    .labelsHidden()
+                                    .pickerStyle(.segmented)
+                                    .frame(maxWidth: 200)
+                                    .onChange(of: state.hapticCalendarSwipeIntensity) { _, newIntensity in
+                                        HapticFeedbackHelper.perform(type: state.hapticCalendarSwipeType, intensity: newIntensity)
+                                    }
+
+                                    Button(action: {
+                                        HapticFeedbackHelper.performCalendarSwipe()
+                                    }) {
+                                        Image(systemName: "hand.tap.fill")
+                                            .font(.system(size: 11))
+                                    }
+                                    .help(String(localized: "Test haptic feedback"))
+                                    .buttonStyle(.bordered)
+                                }
+                            }
+                        }
+                        .padding(8)
+                        .background(Color.white.opacity(0.03))
+                        .cornerRadius(6)
+                    }
+
+                    Text(String(localized: "Tactile click on Force Touch trackpad for island actions and calendar navigation."))
+                        .font(.system(size: 11))
+                        .foregroundColor(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
             }
             .padding(6)
         }

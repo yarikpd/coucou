@@ -1,7 +1,97 @@
 import Foundation
 import SwiftUI
 import Combine
+import AppKit
 
+enum HapticFeedbackType: String, CaseIterable, Identifiable, Sendable {
+    case alignment = "alignment"
+    case levelChange = "levelChange"
+    case generic = "generic"
+
+    var id: String { rawValue }
+
+    var displayName: String {
+        switch self {
+        case .alignment: return String(localized: "Alignment (Snappy)")
+        case .levelChange: return String(localized: "Level Change (Firm)")
+        case .generic: return String(localized: "Generic (Soft)")
+        }
+    }
+
+    var pattern: NSHapticFeedbackManager.FeedbackPattern {
+        switch self {
+        case .alignment: return .alignment
+        case .levelChange: return .levelChange
+        case .generic: return .generic
+        }
+    }
+}
+
+enum HapticFeedbackIntensity: String, CaseIterable, Identifiable, Sendable {
+    case light = "light"
+    case medium = "medium"
+    case strong = "strong"
+
+    var id: String { rawValue }
+
+    var displayName: String {
+        switch self {
+        case .light: return String(localized: "Light")
+        case .medium: return String(localized: "Medium")
+        case .strong: return String(localized: "Strong")
+        }
+    }
+}
+
+@MainActor
+enum HapticFeedbackHelper {
+    static func perform(type: HapticFeedbackType, intensity: HapticFeedbackIntensity) {
+        guard AppState.shared.hapticsEnabled else { return }
+        let pattern = type.pattern
+
+        // Dispatch asynchronously to never trigger during a SwiftUI view update pass
+        DispatchQueue.main.async {
+            let performer = NSHapticFeedbackManager.defaultPerformer
+            performer.perform(pattern, performanceTime: .now)
+
+            switch intensity {
+            case .light:
+                break
+            case .medium:
+                // Medium: second pulse after 35ms gives a crisp, confident physical click
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.035) {
+                    performer.perform(pattern, performanceTime: .now)
+                }
+            case .strong:
+                // Strong: triple pulse burst (0ms, 30ms, 65ms) delivering deep, unmistakable tactile feedback
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.030) {
+                    performer.perform(pattern, performanceTime: .now)
+                }
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.065) {
+                    performer.perform(pattern, performanceTime: .now)
+                }
+            }
+        }
+    }
+
+    static func performOpen() {
+        let s = AppState.shared
+        guard s.hapticsEnabled, s.hapticOpenEnabled else { return }
+        perform(type: s.hapticOpenType, intensity: s.hapticOpenIntensity)
+    }
+
+    static func performClose() {
+        let s = AppState.shared
+        guard s.hapticsEnabled, s.hapticCloseEnabled else { return }
+        perform(type: s.hapticCloseType, intensity: s.hapticCloseIntensity)
+    }
+
+    static func performCalendarSwipe() {
+        let s = AppState.shared
+        guard s.hapticsEnabled, s.hapticCalendarSwipeEnabled else { return }
+        perform(type: s.hapticCalendarSwipeType, intensity: s.hapticCalendarSwipeIntensity)
+    }
+}
 
 @MainActor
 final class AppState: ObservableObject {
@@ -59,6 +149,80 @@ final class AppState: ObservableObject {
     // Sound enabled — persisted
     @Published var soundEnabled: Bool = true {
         didSet { UserDefaults.standard.set(soundEnabled, forKey: "soundEnabled") }
+    }
+
+    // Haptic feedback on trackpad — persisted
+    @Published var hapticsEnabled: Bool = (UserDefaults.standard.object(forKey: "hapticsEnabled") as? Bool) ?? true {
+        didSet { UserDefaults.standard.set(hapticsEnabled, forKey: "hapticsEnabled") }
+    }
+
+    // Open haptics
+    @Published var hapticOpenEnabled: Bool = (UserDefaults.standard.object(forKey: "hapticOpenEnabled") as? Bool) ?? true {
+        didSet { UserDefaults.standard.set(hapticOpenEnabled, forKey: "hapticOpenEnabled") }
+    }
+    @Published var hapticOpenType: HapticFeedbackType = {
+        if let raw = UserDefaults.standard.string(forKey: "hapticOpenType"),
+           let t = HapticFeedbackType(rawValue: raw) {
+            return t
+        }
+        return .alignment
+    }() {
+        didSet { UserDefaults.standard.set(hapticOpenType.rawValue, forKey: "hapticOpenType") }
+    }
+    @Published var hapticOpenIntensity: HapticFeedbackIntensity = {
+        if let raw = UserDefaults.standard.string(forKey: "hapticOpenIntensity"),
+           let i = HapticFeedbackIntensity(rawValue: raw) {
+            return i
+        }
+        return .medium
+    }() {
+        didSet { UserDefaults.standard.set(hapticOpenIntensity.rawValue, forKey: "hapticOpenIntensity") }
+    }
+
+    // Close haptics (when collapsing/pointer exits)
+    @Published var hapticCloseEnabled: Bool = (UserDefaults.standard.object(forKey: "hapticCloseEnabled") as? Bool) ?? true {
+        didSet { UserDefaults.standard.set(hapticCloseEnabled, forKey: "hapticCloseEnabled") }
+    }
+    @Published var hapticCloseType: HapticFeedbackType = {
+        if let raw = UserDefaults.standard.string(forKey: "hapticCloseType"),
+           let t = HapticFeedbackType(rawValue: raw) {
+            return t
+        }
+        return .generic
+    }() {
+        didSet { UserDefaults.standard.set(hapticCloseType.rawValue, forKey: "hapticCloseType") }
+    }
+    @Published var hapticCloseIntensity: HapticFeedbackIntensity = {
+        if let raw = UserDefaults.standard.string(forKey: "hapticCloseIntensity"),
+           let i = HapticFeedbackIntensity(rawValue: raw) {
+            return i
+        }
+        return .medium
+    }() {
+        didSet { UserDefaults.standard.set(hapticCloseIntensity.rawValue, forKey: "hapticCloseIntensity") }
+    }
+
+    // Calendar swipe haptics (when switching days via swipe)
+    @Published var hapticCalendarSwipeEnabled: Bool = (UserDefaults.standard.object(forKey: "hapticCalendarSwipeEnabled") as? Bool) ?? true {
+        didSet { UserDefaults.standard.set(hapticCalendarSwipeEnabled, forKey: "hapticCalendarSwipeEnabled") }
+    }
+    @Published var hapticCalendarSwipeType: HapticFeedbackType = {
+        if let raw = UserDefaults.standard.string(forKey: "hapticCalendarSwipeType"),
+           let t = HapticFeedbackType(rawValue: raw) {
+            return t
+        }
+        return .alignment
+    }() {
+        didSet { UserDefaults.standard.set(hapticCalendarSwipeType.rawValue, forKey: "hapticCalendarSwipeType") }
+    }
+    @Published var hapticCalendarSwipeIntensity: HapticFeedbackIntensity = {
+        if let raw = UserDefaults.standard.string(forKey: "hapticCalendarSwipeIntensity"),
+           let i = HapticFeedbackIntensity(rawValue: raw) {
+            return i
+        }
+        return .medium
+    }() {
+        didSet { UserDefaults.standard.set(hapticCalendarSwipeIntensity.rawValue, forKey: "hapticCalendarSwipeIntensity") }
     }
 
     // Header tabs — persisted
@@ -549,6 +713,13 @@ final class AppState: ObservableObject {
         let ud = UserDefaults.standard
 
         if let v = ud.object(forKey: "soundEnabled") as? Bool   { soundEnabled = v }
+        if let v = ud.object(forKey: "hapticsEnabled") as? Bool { hapticsEnabled = v }
+        if let v = ud.object(forKey: "hapticOpenEnabled") as? Bool { hapticOpenEnabled = v }
+        if let v = ud.string(forKey: "hapticOpenType"), let t = HapticFeedbackType(rawValue: v) { hapticOpenType = t }
+        if let v = ud.string(forKey: "hapticOpenIntensity"), let i = HapticFeedbackIntensity(rawValue: v) { hapticOpenIntensity = i }
+        if let v = ud.object(forKey: "hapticCloseEnabled") as? Bool { hapticCloseEnabled = v }
+        if let v = ud.string(forKey: "hapticCloseType"), let t = HapticFeedbackType(rawValue: v) { hapticCloseType = t }
+        if let v = ud.string(forKey: "hapticCloseIntensity"), let i = HapticFeedbackIntensity(rawValue: v) { hapticCloseIntensity = i }
         if let v = ud.object(forKey: "soundVolume")  as? Double { soundVolume  = v }
         mochiOutfitSelection = Outfit.stored
         pillColors = PillColors.stored

@@ -592,9 +592,13 @@ final class IslandWindowController: NSWindowController {
             ? .timingCurve(0.45, 0, 0.2, 1, duration: 0.34)
             : .spring(response: 0.5, dampingFraction: 0.72)
         withAnimation(anim) { state.mode = mode }
-        if mode == .expanded { SoundEngine.shared.play("open") }
+        if mode == .expanded {
+            SoundEngine.shared.play("open")
+            HapticFeedbackHelper.performOpen()
+        }
         if prev == .expanded {
             SoundEngine.shared.play("close")
+            HapticFeedbackHelper.performClose()
             if fsm.isHeldOpen?() != true { state.isPinned = false }
         }
     }
