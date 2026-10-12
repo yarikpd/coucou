@@ -61,6 +61,40 @@ final class AppState: ObservableObject {
         didSet { UserDefaults.standard.set(soundEnabled, forKey: "soundEnabled") }
     }
 
+    // Header tabs — persisted
+    @Published var showHomeTab: Bool = (UserDefaults.standard.object(forKey: "showHomeTab") as? Bool) ?? true {
+        didSet {
+            UserDefaults.standard.set(showHomeTab, forKey: "showHomeTab")
+            ensureValidActiveView()
+        }
+    }
+    @Published var showChatTab: Bool = (UserDefaults.standard.object(forKey: "showChatTab") as? Bool) ?? true {
+        didSet {
+            UserDefaults.standard.set(showChatTab, forKey: "showChatTab")
+            ensureValidActiveView()
+        }
+    }
+    @Published var showFilesTab: Bool = (UserDefaults.standard.object(forKey: "showFilesTab") as? Bool) ?? true {
+        didSet {
+            UserDefaults.standard.set(showFilesTab, forKey: "showFilesTab")
+            ensureValidActiveView()
+        }
+    }
+
+    /// Ensures that if the active view corresponds to a tab that got hidden, the island switches to an available view.
+    func ensureValidActiveView() {
+        if !showHomeTab && (view == .overview || view == .empty) {
+            if showChatTab { view = .prompt }
+            else if showFilesTab { view = .upload }
+        } else if !showChatTab && view == .prompt {
+            if showHomeTab { view = tasks.isEmpty ? .empty : .overview }
+            else if showFilesTab { view = .upload }
+        } else if !showFilesTab && (view == .upload || view == .uploading || view == .choose) {
+            if showHomeTab { view = tasks.isEmpty ? .empty : .overview }
+            else if showChatTab { view = .prompt }
+        }
+    }
+
     // Weekly recap — persisted
     @Published var recapEnabled: Bool = (UserDefaults.standard.object(forKey: "recapEnabled") as? Bool) ?? true {
         didSet { UserDefaults.standard.set(recapEnabled, forKey: "recapEnabled") }

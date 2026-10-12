@@ -533,15 +533,21 @@ struct IslandHeader: View {
         HStack(spacing: 0) {
             // Left: tab capsules
             HStack(spacing: 5) {
-                TabButton(icon: "house.fill", view: .overview, state: state)
-                TabButton(icon: "bubble.left.fill", view: .prompt, state: state, preAction: {
-                    #if !APPSTORE
-                    if state.promptContext == nil {
-                        state.promptContext = WindowContextCapture.captureActive(from: state.lastExternalApp)
-                    }
-                    #endif
-                })
-                TabButton(icon: "plus", view: .upload, state: state)
+                if state.showHomeTab {
+                    TabButton(icon: "house.fill", view: .overview, state: state)
+                }
+                if state.showChatTab {
+                    TabButton(icon: "bubble.left.fill", view: .prompt, state: state, preAction: {
+                        #if !APPSTORE
+                        if state.promptContext == nil {
+                            state.promptContext = WindowContextCapture.captureActive(from: state.lastExternalApp)
+                        }
+                        #endif
+                    })
+                }
+                if state.showFilesTab {
+                    TabButton(icon: "plus", view: .upload, state: state)
+                }
             }
             .padding(.leading, 14)
 

@@ -1,4 +1,4 @@
-import Foundation
+ import Foundation
 
 // MARK: - Shared diagnostic log helpers
 

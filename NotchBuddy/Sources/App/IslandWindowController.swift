@@ -1254,6 +1254,13 @@ final class IslandWindowController: NSWindowController {
 
     func defaultView() -> IslandView {
         if state.pendingApproval != nil { return .approval }
+        if state.showHomeTab {
+            return state.tasks.isEmpty ? .empty : .overview
+        } else if state.showChatTab {
+            return .prompt
+        } else if state.showFilesTab {
+            return .upload
+        }
         return state.tasks.isEmpty ? .empty : .overview
     }
 

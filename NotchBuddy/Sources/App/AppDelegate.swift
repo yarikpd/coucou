@@ -72,7 +72,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     @objc private func openIsland() {
         islandController?.fsm.openedExternally()
-        islandController?.expand(to: .overview)
+        islandController?.expand(to: islandController?.defaultView() ?? .overview)
     }
 
     @objc private func openWeeklyRecap() {

@@ -178,6 +178,7 @@ struct SettingsView: View {
                         set: { if let v = $0 { selectedSection = v; statusMessage = "" } }
                     )) {
                         SettingsSidebarRow(title: "General",      icon: "gearshape.fill",                    color: "#8E939C").tag("general")
+                        SettingsSidebarRow(title: "Tabs",         icon: "square.split.2x1.fill",             color: "#38BDF8").tag("tabs")
                         SettingsSidebarRow(title: "Active pills", icon: "square.grid.2x2.fill",              color: "#F5A524").tag("activepills")
                         SettingsSidebarRow(title: "Agents",       icon: "terminal.fill",                     color: "#3B9EFF").tag("agents")
                         SettingsSidebarRow(title: "Chat",         icon: "bubble.left.and.bubble.right.fill", color: "#E07950").tag("chat")
@@ -249,6 +250,7 @@ struct SettingsView: View {
     private var sectionTitle: String {
         switch selectedSection {
         case "general":      return String(localized: "General")
+        case "tabs":         return String(localized: "Tabs")
         case "activepills":  return String(localized: "Active pills")
         case "agents":       return String(localized: "Agents")
         case "chat":         return String(localized: "Chat")
@@ -261,6 +263,7 @@ struct SettingsView: View {
 
     @ViewBuilder private var sectionContent: some View {
         switch selectedSection {
+        case "tabs":         tabsSection
         case "activepills":  activePillsSection
         case "agents":       agentsSection
         case "chat":         chatSection
@@ -503,6 +506,49 @@ struct SettingsView: View {
         connectedScreens = NSScreen.screens.compactMap { screen in
             guard let uuid = IslandWindowController.displayUUID(screen) else { return nil }
             return (uuid, screen.localizedName)
+        }
+    }
+
+    // MARK: - Tabs section
+
+    @ViewBuilder private var tabsSection: some View {
+        GroupBox(String(localized: "Header Tabs")) {
+            VStack(alignment: .leading, spacing: 14) {
+                Text(String(localized: "Choose which tabs appear in the island header. At least one tab must remain enabled."))
+                    .font(.system(size: 11))
+                    .foregroundColor(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+
+                let activeCount = [state.showHomeTab, state.showChatTab, state.showFilesTab].filter { $0 }.count
+
+                HStack(spacing: 12) {
+                    Image(systemName: "house.fill")
+                        .font(.system(size: 13))
+                        .foregroundColor(Color(hex: "#8E939C"))
+                        .frame(width: 20)
+                    Toggle(String(localized: "Home (Sessions & Status)"), isOn: $state.showHomeTab)
+                        .disabled(state.showHomeTab && activeCount <= 1)
+                }
+
+                HStack(spacing: 12) {
+                    Image(systemName: "bubble.left.fill")
+                        .font(.system(size: 13))
+                        .foregroundColor(Color(hex: "#8E939C"))
+                        .frame(width: 20)
+                    Toggle(String(localized: "Chat (AI Assistant)"), isOn: $state.showChatTab)
+                        .disabled(state.showChatTab && activeCount <= 1)
+                }
+
+                HStack(spacing: 12) {
+                    Image(systemName: "plus")
+                        .font(.system(size: 13, weight: .bold))
+                        .foregroundColor(Color(hex: "#8E939C"))
+                        .frame(width: 20)
+                    Toggle(String(localized: "Files (Drop & Upload)"), isOn: $state.showFilesTab)
+                        .disabled(state.showFilesTab && activeCount <= 1)
+                }
+            }
+            .padding(6)
         }
     }
 
