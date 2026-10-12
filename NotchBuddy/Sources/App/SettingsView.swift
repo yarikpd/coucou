@@ -1243,7 +1243,28 @@ struct SettingsView: View {
                     .fixedSize(horizontal: false, vertical: true)
                 Toggle("Show Codex plan in the notch", isOn: Binding(
                     get: { state.showCodexPlanInNotch },
-                    set: { state.showCodexPlanInNotch = $0 }
+                    set: {
+                        state.showCodexPlanInNotch = $0
+                        if $0 {
+                            state.planDetailProvider = .codex
+                            state.refreshCodexPlanUsage()
+                        }
+                    }
+                ))
+                Divider()
+                Text(String(localized: "Shows your Google Antigravity plan usage (5-hour and weekly limits for Gemini and Claude/GPT pools) in the notch header. Coucou queries your running Antigravity session or the agy CLI locally; nothing is installed."))
+                    .font(.system(size: 11))
+                    .foregroundColor(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+                Toggle(String(localized: "Show Antigravity plan in the notch"), isOn: Binding(
+                    get: { state.showAntigravityPlanInNotch },
+                    set: {
+                        state.showAntigravityPlanInNotch = $0
+                        if $0 {
+                            state.planDetailProvider = .antigravity
+                            state.refreshAntigravityPlanUsage()
+                        }
+                    }
                 ))
             }
             .padding(6)

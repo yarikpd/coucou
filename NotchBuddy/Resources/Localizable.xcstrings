@@ -1353,6 +1353,9 @@
         }
       }
     },
+    "Antigravity plan" : {
+
+    },
     "Apple Music" : {
 
     },
@@ -20711,6 +20714,70 @@
         }
       }
     },
+    "Show Antigravity plan in the notch" : {
+      "localizations" : {
+        "ar" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "إظهار خطة Antigravity في النوتش"
+          }
+        },
+        "bn" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "নচে Antigravity প্ল্যান দেখান"
+          }
+        },
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Show Antigravity plan in the notch"
+          }
+        },
+        "es" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Mostrar el plan de Antigravity en el notch"
+          }
+        },
+        "fr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Afficher le forfait Antigravity dans l'encoche"
+          }
+        },
+        "hi" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "नॉच में Antigravity प्लान दिखाएं"
+          }
+        },
+        "id" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Tampilkan paket Antigravity di notch"
+          }
+        },
+        "pt-BR" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Mostrar plano do Antigravity no notch"
+          }
+        },
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Показывать лимит Antigravity в островке"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "在刘海中显示 Antigravity 额度"
+          }
+        }
+      }
+    },
     "Show island with shortcut" : {
       "localizations" : {
         "ar" : {
@@ -20777,6 +20844,70 @@
     },
     "Shows your Codex plan usage (weekly limit and free resets left) in the notch header. Coucou asks the Codex CLI (codex app-server) when the pill shows; nothing is installed. Codex must be signed in with ChatGPT." : {
 
+    },
+    "Shows your Google Antigravity plan usage (5-hour and weekly limits for Gemini and Claude/GPT pools) in the notch header. Coucou queries your running Antigravity session or the agy CLI locally; nothing is installed." : {
+      "localizations" : {
+        "ar" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "يعرض استخدام خطة Google Antigravity الخاصة بك (حدود 5 ساعات والأسبوعية لمجموعات Gemini وClaude/GPT) في رأس النوتش. يستعلم Coucou عن جلسة Antigravity النشطة أو أداة agy CLI محليًا؛ لا يتم تثبيت أي شيء."
+          }
+        },
+        "bn" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "নচ হেডারে আপনার Google Antigravity প্ল্যানের ব্যবহার (Gemini এবং Claude/GPT পুলের জন্য ৫-ঘণ্টা এবং সাপ্তাহিক সীমা) দেখায়। Coucou আপনার চলমান Antigravity সেশন বা agy CLI স্থানীয়ভাবে কোয়েরি করে; কিছুই ইনস্টল করা হয় না।"
+          }
+        },
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Shows your Google Antigravity plan usage (5-hour and weekly limits for Gemini and Claude/GPT pools) in the notch header. Coucou queries your running Antigravity session or the agy CLI locally; nothing is installed."
+          }
+        },
+        "es" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Muestra el uso de tu plan de Google Antigravity (límites de 5 horas y semanales para los grupos Gemini y Claude/GPT) en el encabezado del notch. Coucou consulta tu sesión activa de Antigravity o el CLI agy localmente; no se instala nada."
+          }
+        },
+        "fr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Affiche l'utilisation de votre forfait Google Antigravity (limites sur 5 heures et hebdomadaires pour Gemini et Claude/GPT) dans l'en-tête de l'encoche. Coucou interroge localement votre session Antigravity ouverte ou le CLI agy ; rien n'est installé."
+          }
+        },
+        "hi" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "नॉच हेडर में आपके Google Antigravity प्लान का उपयोग (Gemini और Claude/GPT पूल के लिए 5-घंटे और साप्ताहिक सीमाएं) दिखाता है। Coucou स्थानीय रूप से आपके चल रहे Antigravity सत्र या agy CLI से जानकारी प्राप्त करता है; कुछ भी इंस्टॉल नहीं किया जाता है।"
+          }
+        },
+        "id" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Menampilkan penggunaan paket Google Antigravity Anda (batas 5 jam dan mingguan untuk grup Gemini dan Claude/GPT) di header notch. Coucou memeriksa sesi Antigravity yang berjalan atau CLI agy secara lokal; tidak ada yang dipasang."
+          }
+        },
+        "pt-BR" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Mostra o uso do seu plano Google Antigravity (limites de 5 horas e semanais para Gemini e Claude/GPT) no cabeçalho do notch. O Coucou consulta localmente sua sessão aberta do Antigravity ou o CLI agy; nada é instalado."
+          }
+        },
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Показывает расход лимитов плана Google Antigravity (5-часовые и недельные квоты для пулов Gemini и Claude/GPT) в шапке островка. Coucou локально опрашивает запущенную сессию Antigravity или CLI agy; ничего дополнительно не устанавливается."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "在刘海顶部显示您的 Google Antigravity 套餐使用情况（Gemini 与 Claude/GPT 模型池的 5 小时和每周限额）。Coucou 会在本地查询正在运行的 Antigravity 会话或 agy CLI，无需安装任何内容。"
+          }
+        }
+      }
     },
     "Shuffle off" : {
       "localizations" : {

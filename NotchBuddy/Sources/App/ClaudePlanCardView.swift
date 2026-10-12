@@ -24,15 +24,21 @@ struct ClaudePlanCardView: View {
                 Text(String(localized: "plan.card.title"))
                     .font(.system(size: 12, weight: .semibold))
                     .foregroundColor(Color(hex: "#F5F6F8"))
+                    .lineLimit(1)
+                    .fixedSize()
                 Text(subtitleText)
                     .font(.system(size: 11))
                     .foregroundColor(Color(hex: "#8E939C"))
                     .lineLimit(1)
                     .fixedSize()
+                #if !APPSTORE
+                Spacer(minLength: 4)
+                PlanProviderSwitcher()
+                #endif
             }
             .padding(.top, 6)
             .padding(.leading, 108)
-            .padding(.trailing, 36)
+            .padding(.trailing, 12)
 
             // Gauge rows
             VStack(alignment: .leading, spacing: 5) {
@@ -108,7 +114,9 @@ struct GaugeRowView: View {
             Text(label)
                 .font(.system(size: 11))
                 .foregroundColor(Color(hex: "#6B7079"))
-                .frame(width: 40, alignment: .leading)
+                .lineLimit(1)
+                .fixedSize(horizontal: true, vertical: false)
+                .frame(width: 52, alignment: .leading)
             if let w = window {
                 let pct = ClaudePlanGauge.effectivePct(w)
                 let accent = Color(hex: ClaudePlanGauge.color(for: pct))

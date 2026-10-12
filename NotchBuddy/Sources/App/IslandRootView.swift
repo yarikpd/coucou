@@ -165,6 +165,18 @@ struct IslandContainer: View {
             guard state.mode == .expanded, state.view == .prompt else { return }
             withAnimation(openSpring) { islandHeight = chatPromptHeight }
         }
+        #if !APPSTORE
+        .onChange(of: state.showingPlanDetail) { _, _ in
+            guard state.mode == .expanded else { return }
+            let (w, h) = islandSize(mode: .expanded, view: state.view,
+                                    progress: state.uploadProgress,
+                                    nw: state.notchWidth, nh: state.notchHeight)
+            withAnimation(openSpring) {
+                islandWidth  = w
+                islandHeight = state.view == .prompt ? chatPromptHeight : h
+            }
+        }
+        #endif
         .onAppear {
             let (w, h) = islandSize(mode: state.mode, view: state.view,
                                     progress: state.uploadProgress,
@@ -501,7 +513,7 @@ struct IslandContentView: View {
                         // but stop their endless animations: nobody sees them.
                         .environment(\.islandViewActive, active)
                         .frame(maxWidth: .infinity)
-                        .frame(height: isTall ? nil : 98)
+                        .frame(height: isTall ? nil : 98 + (v == .overview ? state.planDetailExtraHeight : 0))
                         .frame(minHeight: (isTall && !active) ? 0 : nil, maxHeight: isTall ? .infinity : nil)
                         .opacity(active ? 1 : 0)
                         .scaleEffect(active ? 1 : 0.97)
@@ -559,12 +571,8 @@ struct IslandHeader: View {
             // Right: plan pill (GitHub build, home view only) + action icons
             HStack(spacing: 8) {
                 #if !APPSTORE
-                // Claude and Codex both on: only Claude here (two pills and the icons do not
-                // clear the notch); Codex is a row in the Claude plan card.
-                if state.view == .overview && state.showPlanInNotch && state.planRelayInstalled {
-                    ClaudePlanHeaderPill(state: state)
-                } else if state.view == .overview && state.showCodexPlanInNotch {
-                    ClaudePlanHeaderPill(state: state, codex: true)
+                if state.view == .overview && state.hasAnyPlanInNotch {
+                    ClaudePlanHeaderPill(state: state, provider: state.activePlanPillProvider)
                 }
                 #endif
                 HStack(spacing: 14) {
@@ -643,37 +651,57 @@ struct TabButton: View {
     }
 }
 
-// MARK: - Claude Plan header pill (GitHub build only)
+// MARK: - Plan header pill (GitHub build only)
 
 #if !APPSTORE
 struct ClaudePlanHeaderPill: View {
     @ObservedObject var state: AppState
-    var codex: Bool = false
+    var provider: PlanDetailProvider = .claude
     @State private var isHovered = false
 
     private var effectiveColor: String {
-        if codex { return CodexPlanGauge.color(state.codexPlanUsage) }
-        return ClaudePlanGauge.color(for: (state.demoPlanUsageOverride ?? state.claudePlanUsage).flatMap { ClaudePlanGauge.dominantPct($0) })
+        switch provider {
+        case .claude:
+            return ClaudePlanGauge.color(for: (state.demoPlanUsageOverride ?? state.claudePlanUsage).flatMap { ClaudePlanGauge.dominantPct($0) })
+        case .codex:
+            return CodexPlanGauge.color(state.codexPlanUsage)
+        case .antigravity:
+            return AntigravityPlanGauge.color(state.antigravityPlanUsage)
+        }
     }
 
     private var label: String {
-        if codex { return CodexPlanGauge.pillLabel(state.codexPlanUsage) }
-        guard let usage = state.demoPlanUsageOverride ?? state.claudePlanUsage,
-              let pct = ClaudePlanGauge.dominantPct(usage) else { return "Claude —" }
-        return "Claude \(Int(pct.rounded()))%"
+        switch provider {
+        case .claude:
+            guard let usage = state.demoPlanUsageOverride ?? state.claudePlanUsage,
+                  let pct = ClaudePlanGauge.dominantPct(usage) else { return "Claude —" }
+            return "Claude \(Int(pct.rounded()))%"
+        case .codex:
+            return CodexPlanGauge.pillLabel(state.codexPlanUsage)
+        case .antigravity:
+            return AntigravityPlanGauge.pillLabel(state.antigravityPlanUsage)
+        }
     }
 
-    private var isOpen: Bool { state.showingPlanDetail && state.planDetailIsCodex == codex }
+    private var isOpen: Bool { state.showingPlanDetail && state.activePlanPillProvider == provider }
     private var isActive: Bool { isOpen || isHovered }
+
+    private func triggerRefresh() {
+        switch provider {
+        case .claude: break
+        case .codex: state.refreshCodexPlanUsage()
+        case .antigravity: state.refreshAntigravityPlanUsage()
+        }
+    }
 
     var body: some View {
         Button(action: {
             withAnimation(.spring(response: 0.28, dampingFraction: 0.82)) {
                 let open = isOpen
-                state.planDetailIsCodex = codex
+                state.planDetailProvider = provider
                 state.showingPlanDetail = !open
             }
-            if codex { state.refreshCodexPlanUsage() }
+            triggerRefresh()
         }) {
             HStack(spacing: 4) {
                 Circle()
@@ -704,7 +732,8 @@ struct ClaudePlanHeaderPill: View {
         .onHover { h in
             withAnimation(.spring(response: 0.2, dampingFraction: 0.7)) { isHovered = h }
         }
-        .onAppear { if codex { state.refreshCodexPlanUsage() } }
+        .onAppear { triggerRefresh() }
+        .onChange(of: provider) { _, _ in triggerRefresh() }
     }
 }
 #endif

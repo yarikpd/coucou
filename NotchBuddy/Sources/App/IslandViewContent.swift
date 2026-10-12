@@ -119,19 +119,20 @@ struct OverviewView: View {
                 if state.showingPlanDetail {
                     CardBackground(wash: nil)
                     Group {
-                        if state.planDetailIsCodex {
+                        switch state.activePlanPillProvider {
+                        case .codex:
                             CodexPlanCardView(usage: state.codexPlanUsage)
-                        } else {
-                            // Claude and Codex both on: the header shows only the Claude pill,
-                            // Codex is a third row here that opens its own card.
+                        case .antigravity:
+                            AntigravityPlanCardView(usage: state.antigravityPlanUsage)
+                        case .claude:
                             let bothPlans = state.showPlanInNotch && state.planRelayInstalled
-                                && state.showCodexPlanInNotch
+                                && state.showCodexPlanInNotch && !state.showAntigravityPlanInNotch
                             ClaudePlanCardView(usage: state.claudePlanUsage,
                                                codexRow: bothPlans,
                                                codexUsage: state.codexPlanUsage,
                                                onCodex: {
                                                    withAnimation(.spring(response: 0.28, dampingFraction: 0.82)) {
-                                                       state.planDetailIsCodex = true
+                                                       state.planDetailProvider = .codex
                                                    }
                                                    state.refreshCodexPlanUsage()
                                                })
@@ -171,7 +172,8 @@ struct OverviewView: View {
                     .frame(maxWidth: .infinity, alignment: .trailing)
                 }
             }
-            .frame(width: 322)
+            .frame(width: 322 + state.planDetailExtraWidth)
+            .clipShape(RoundedRectangle(cornerRadius: 20))
 
             // Right card: agent pills
             CardBackground(wash: nil) {

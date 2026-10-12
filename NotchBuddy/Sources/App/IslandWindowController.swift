@@ -73,7 +73,7 @@ final class IslandWindowController: NSWindowController {
         let nW = geometry.width
         let nH = geometry.height
 
-        let panelW: CGFloat = 720
+        let panelW: CGFloat = 880
         let panelH: CGFloat = 560
         let sf = screen.frame
         let panel = IslandPanel(
@@ -2037,6 +2037,7 @@ extension Notification.Name {
 
 // MARK: - islandSize (takes real notch dimensions)
 
+@MainActor
 func islandSize(mode: IslandMode, view: IslandView,
                 progress: Double = 0,
                 nw: CGFloat = IslandConst.notchWidth,
@@ -2049,6 +2050,13 @@ func islandSize(mode: IslandMode, view: IslandView,
         if view == .question, let h = QuestionLayout.height {
             return (IslandConst.expandedWidth, h)
         }
+        #if !APPSTORE
+        if view == .overview {
+            let s = AppState.shared
+            return (IslandConst.expandedWidth + s.planDetailExtraWidth,
+                    layout.height + s.planDetailExtraHeight)
+        }
+        #endif
         return (IslandConst.expandedWidth, layout.height)
     }
 }

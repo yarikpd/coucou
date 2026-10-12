@@ -683,8 +683,54 @@ final class AppState: ObservableObject {
         didSet { UserDefaults.standard.set(showCodexPlanInNotch, forKey: "showCodexPlanInNotch") }
     }
     @Published var codexPlanUsage: CodexPlanUsage? = nil
+
+    // Antigravity plan gauge (from local `language_server` / `agy`) — fetched when the pill shows
+    @Published var showAntigravityPlanInNotch: Bool = false {
+        didSet { UserDefaults.standard.set(showAntigravityPlanInNotch, forKey: "showAntigravityPlanInNotch") }
+    }
+    @Published var antigravityPlanUsage: AntigravityPlanUsage? = nil
+
     // Which card showingPlanDetail opens
-    @Published var planDetailIsCodex: Bool = false
+    @Published var planDetailProvider: PlanDetailProvider = .claude
+
+    var planDetailIsCodex: Bool {
+        get { planDetailProvider == .codex }
+        set { planDetailProvider = newValue ? .codex : .claude }
+    }
+
+    var enabledPlanProviders: [PlanDetailProvider] {
+        var list: [PlanDetailProvider] = []
+        if showPlanInNotch && planRelayInstalled { list.append(.claude) }
+        if showCodexPlanInNotch { list.append(.codex) }
+        if showAntigravityPlanInNotch { list.append(.antigravity) }
+        return list
+    }
+
+    var hasAnyPlanInNotch: Bool {
+        !enabledPlanProviders.isEmpty
+    }
+
+    var activePlanPillProvider: PlanDetailProvider {
+        let enabled = enabledPlanProviders
+        if enabled.contains(planDetailProvider) {
+            return planDetailProvider
+        }
+        return enabled.first ?? .claude
+    }
+
+    /// Extra horizontal width added to the left card and the island when plan detail is open.
+    var planDetailExtraWidth: CGFloat {
+        guard mode == .expanded, view == .overview, showingPlanDetail else { return 0 }
+        let switcherCount = enabledPlanProviders.count
+        let switcherExtra: CGFloat = switcherCount > 1 ? CGFloat(switcherCount) * 42 : 0
+        return 88 + switcherExtra
+    }
+
+    /// Extra vertical height added to the overview card and island when plan detail is open.
+    var planDetailExtraHeight: CGFloat {
+        guard mode == .expanded, view == .overview, showingPlanDetail else { return 0 }
+        return 18
+    }
 
     /// Rate-limited on the attempt, not only on success: without Codex installed or
     /// signed in, every appearance of the pill used to spawn `codex app-server` again.
@@ -699,6 +745,20 @@ final class AppState: ObservableObject {
         Task {
             if let u = await CodexPlanGauge.fetch() { codexPlanUsage = u }
             Self.codexFetchInFlight = false
+        }
+    }
+
+    private static var lastAntigravityAttempt: Date = .distantPast
+    private static var antigravityFetchInFlight = false
+
+    func refreshAntigravityPlanUsage() {
+        if let u = antigravityPlanUsage, Date().timeIntervalSince(u.updatedAt) < 30 { return }
+        guard !Self.antigravityFetchInFlight, Date().timeIntervalSince(Self.lastAntigravityAttempt) > 15 else { return }
+        Self.antigravityFetchInFlight = true
+        Self.lastAntigravityAttempt = Date()
+        Task {
+            if let u = await AntigravityPlanGauge.fetch() { antigravityPlanUsage = u }
+            Self.antigravityFetchInFlight = false
         }
     }
 
@@ -758,6 +818,7 @@ final class AppState: ObservableObject {
         #if !APPSTORE
         if let v = ud.object(forKey: "showPlanInNotch") as? Bool { showPlanInNotch = v }
         if let v = ud.object(forKey: "showCodexPlanInNotch") as? Bool { showCodexPlanInNotch = v }
+        if let v = ud.object(forKey: "showAntigravityPlanInNotch") as? Bool { showAntigravityPlanInNotch = v }
         planRelayInstalled = HookServer.statusLineInstalled()
         #endif
 
