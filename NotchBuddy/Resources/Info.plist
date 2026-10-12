@@ -36,14 +36,18 @@
 	<key>LSUIElement</key>
 	<true/>
 	<key>NSAccessibilityUsageDescription</key>
-	<string>Pour lire le titre de la fenêtre active et l'attacher comme contexte.</string>
+	<string>Coucou считывает заголовок активного окна для передачи контекста AI-агентам.</string>
 	<key>NSAppTransportSecurity</key>
 	<dict>
 		<key>NSAllowsLocalNetworking</key>
 		<true/>
 	</dict>
 	<key>NSAppleEventsUsageDescription</key>
-	<string>Pour sauter au terminal, envoyer des mails et piloter Musique et Spotify.</string>
+	<string>Coucou переключает терминал, отправляет почту и управляет воспроизведением музыки.</string>
+	<key>NSCalendarsUsageDescription</key>
+	<string>Coucou отображает ближайшие события календаря в вырезе (Notch).</string>
+	<key>NSCalendarsFullAccessUsageDescription</key>
+	<string>Coucou отображает ближайшие события календаря в вырезе (Notch).</string>
 	<key>NSContactsUsageDescription</key>
 	<string>Coucou looks up an email address when you ask it, by voice, to prepare an email.</string>
 	<key>NSHighResolutionCapable</key>

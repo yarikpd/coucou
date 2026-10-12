@@ -135,10 +135,12 @@ targets:
         LSUIElement: YES
         NSHighResolutionCapable: YES
         NSSupportsAutomaticGraphicsSwitching: YES
-        NSAppleEventsUsageDescription: "Pour sauter au terminal, envoyer des mails et piloter Musique et Spotify."
+        NSAppleEventsUsageDescription: "Coucou переключает терминал, отправляет почту и управляет воспроизведением музыки."
+        NSCalendarsUsageDescription: "Coucou отображает ближайшие события календаря в вырезе (Notch)."
+        NSCalendarsFullAccessUsageDescription: "Coucou отображает ближайшие события календаря в вырезе (Notch)."
         NSMicrophoneUsageDescription: "Coucou uses the microphone when you dictate a message in the chat."
         NSSpeechRecognitionUsageDescription: "Coucou turns your voice into the text of a chat message."
-        NSAccessibilityUsageDescription: "Pour lire le titre de la fenêtre active et l'attacher comme contexte."
+        NSAccessibilityUsageDescription: "Coucou считывает заголовок активного окна для передачи контекста AI-агентам."
         NSContactsUsageDescription: "Coucou looks up an email address when you ask it, by voice, to prepare an email."
         NSAppTransportSecurity:
           NSAllowsLocalNetworking: true

@@ -2,7 +2,8 @@
 
 ## Unreleased
 
-- **Customize island tabs** *(macOS)* — Settings → Tabs: choose which tabs appear in the notch header (Home, Chat and Files). At least one tab remains enabled, and the island gracefully switches to an active tab when a currently open tab is toggled off
+- **Apple Calendar integration** *(macOS)* — view upcoming events in the notch with an interactive 7-day strip centered on the selected date, smooth trackpad swipe and mouse wheel day switching with momentum suppression, live calendar sync, and quick-join video call links. Click any event to open Apple Calendar; customize trackpad and mouse scroll speed in Settings → General; Mochi alerts you 15 minutes before meetings and celebrates when the day is done
+- **Customize island tabs** *(macOS)* — Settings → Tabs: choose which tabs appear in the notch header (Home, Chat, Calendar and Files). At least one tab remains enabled, and the island gracefully switches to an active tab when a currently open tab is toggled off
 - **Coucou for Android**, by @Rhytam23 — your agents, Allow and Deny with your fingerprint or screen lock (even on a locked phone), answers to Claude's questions, chat through the computer's own keys, plan usage and services, an optional island over other apps, a widget, a quick-settings tile and an ongoing notification. It pairs with Coucou 0.4.0 or later on Windows or Linux. Android 11 or later, English only; the first signed APK is on its way. Build it today from [`android/`](android/README.md) (#501 by @Rhytam23)
 
 ## Windows and Linux 0.4.0 — October 11, 2026

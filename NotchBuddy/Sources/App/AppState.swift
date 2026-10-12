@@ -80,19 +80,40 @@ final class AppState: ObservableObject {
             ensureValidActiveView()
         }
     }
+    @Published var showCalendarTab: Bool = (UserDefaults.standard.object(forKey: "showCalendarTab") as? Bool) ?? true {
+        didSet {
+            UserDefaults.standard.set(showCalendarTab, forKey: "showCalendarTab")
+            ensureValidActiveView()
+        }
+    }
 
     /// Ensures that if the active view corresponds to a tab that got hidden, the island switches to an available view.
     func ensureValidActiveView() {
         if !showHomeTab && (view == .overview || view == .empty) {
             if showChatTab { view = .prompt }
+            else if showCalendarTab { view = .calendar }
             else if showFilesTab { view = .upload }
         } else if !showChatTab && view == .prompt {
             if showHomeTab { view = tasks.isEmpty ? .empty : .overview }
+            else if showCalendarTab { view = .calendar }
+            else if showFilesTab { view = .upload }
+        } else if !showCalendarTab && view == .calendar {
+            if showHomeTab { view = tasks.isEmpty ? .empty : .overview }
+            else if showChatTab { view = .prompt }
             else if showFilesTab { view = .upload }
         } else if !showFilesTab && (view == .upload || view == .uploading || view == .choose) {
             if showHomeTab { view = tasks.isEmpty ? .empty : .overview }
             else if showChatTab { view = .prompt }
+            else if showCalendarTab { view = .calendar }
         }
+    }
+
+    // Calendar scroll speed — persisted
+    @Published var calendarTrackpadScrollSpeed: Double = (UserDefaults.standard.object(forKey: "calendarTrackpadScrollSpeed") as? Double) ?? 1.0 {
+        didSet { UserDefaults.standard.set(calendarTrackpadScrollSpeed, forKey: "calendarTrackpadScrollSpeed") }
+    }
+    @Published var calendarMouseScrollSpeed: Double = (UserDefaults.standard.object(forKey: "calendarMouseScrollSpeed") as? Double) ?? 1.0 {
+        didSet { UserDefaults.standard.set(calendarMouseScrollSpeed, forKey: "calendarMouseScrollSpeed") }
     }
 
     // Weekly recap — persisted

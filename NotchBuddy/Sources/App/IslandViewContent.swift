@@ -1,4 +1,5 @@
 import SwiftUI
+import EventKit
 
 // MARK: - Dispatch view content by IslandView
 
@@ -20,6 +21,7 @@ struct IslandViewContent: View {
         case .choose:    ChooseView(state: state)
         case .mail:      MailView(state: state)
         case .prompt:    PromptView(state: state)
+        case .calendar:  CalendarIslandView(state: state)
         case .searching: SearchingView(state: state)
         case .result:    ResultView(state: state)
         case .note:      NoteView(state: state)
@@ -5055,5 +5057,754 @@ extension Color {
             green: min(1, Double(components.greenComponent) + amount),
             blue: min(1, Double(components.blueComponent) + amount)
         )
+    }
+}
+
+// MARK: - Calendar Integration
+
+enum DayTransitionDirection {
+    case forward
+    case backward
+}
+
+@MainActor
+final class CalendarService: ObservableObject {
+    static let shared = CalendarService()
+
+    @Published var authorizationStatus: EKAuthorizationStatus = .notDetermined
+    @Published var events: [EKEvent] = []
+    @Published var selectedDate: Date = Calendar.current.startOfDay(for: Date())
+    @Published var daysWithEvents: Set<Date> = []
+    @Published var nextMeetingMinutes: Int? = nil
+    @Published var transitionDirection: DayTransitionDirection = .forward
+
+    private let eventStore = EKEventStore()
+    private var observerToken: NSObjectProtocol?
+    private var timer: Timer?
+
+    var isAuthorized: Bool {
+        if #available(macOS 14.0, *) {
+            return authorizationStatus == .fullAccess || authorizationStatus == .authorized
+        } else {
+            return authorizationStatus == .authorized
+        }
+    }
+
+    init() {
+        checkAuthorization()
+        observerToken = NotificationCenter.default.addObserver(
+            forName: .EKEventStoreChanged,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            Task { @MainActor [weak self] in
+                self?.loadEvents()
+            }
+        }
+        startTimer()
+    }
+
+    func checkAuthorization() {
+        authorizationStatus = EKEventStore.authorizationStatus(for: .event)
+        if isAuthorized {
+            loadEvents()
+        }
+    }
+
+    func requestAccess() {
+        Task {
+            do {
+                let granted: Bool
+                if #available(macOS 14.0, *) {
+                    granted = try await eventStore.requestFullAccessToEvents()
+                } else {
+                    granted = try await withCheckedThrowingContinuation { continuation in
+                        eventStore.requestAccess(to: .event) { granted, error in
+                            if let error = error {
+                                continuation.resume(throwing: error)
+                            } else {
+                                continuation.resume(returning: granted)
+                            }
+                        }
+                    }
+                }
+                checkAuthorization()
+                if granted {
+                    loadEvents()
+                }
+            } catch {
+                checkAuthorization()
+            }
+        }
+    }
+
+    func selectNextDay() {
+        guard let next = Calendar.current.date(byAdding: .day, value: 1, to: selectedDate) else { return }
+        transitionDirection = .forward
+        select(date: next)
+    }
+
+    func selectPreviousDay() {
+        guard let prev = Calendar.current.date(byAdding: .day, value: -1, to: selectedDate) else { return }
+        transitionDirection = .backward
+        select(date: prev)
+    }
+
+    func selectToday() {
+        let today = Calendar.current.startOfDay(for: Date())
+        if selectedDate != today {
+            transitionDirection = selectedDate < today ? .forward : .backward
+            select(date: today)
+        }
+    }
+
+    func select(date: Date) {
+        let newDate = Calendar.current.startOfDay(for: date)
+        if newDate > selectedDate {
+            transitionDirection = .forward
+        } else if newDate < selectedDate {
+            transitionDirection = .backward
+        }
+        selectedDate = newDate
+        loadEvents()
+    }
+
+    func loadEvents() {
+        guard isAuthorized else { return }
+
+        let cal = Calendar.current
+        let selStart = selectedDate
+
+        // Range: 14 days around selectedDate to populate dot indicators
+        guard let rangeStart = cal.date(byAdding: .day, value: -14, to: selStart),
+              let rangeEnd = cal.date(byAdding: .day, value: 15, to: selStart) else { return }
+
+        let predicate = eventStore.predicateForEvents(withStart: rangeStart, end: rangeEnd, calendars: nil)
+        let allEvents = eventStore.events(matching: predicate)
+
+        // Populate daysWithEvents
+        var eventDays = Set<Date>()
+        for event in allEvents {
+            let day = cal.startOfDay(for: event.startDate)
+            eventDays.insert(day)
+        }
+        self.daysWithEvents = eventDays
+
+        // Events for selectedDate
+        guard let selEnd = cal.date(byAdding: .day, value: 1, to: selStart) else { return }
+        let selPredicate = eventStore.predicateForEvents(withStart: selStart, end: selEnd, calendars: nil)
+        let dayEvents = eventStore.events(matching: selPredicate)
+
+        let isToday = cal.isDateInToday(selectedDate)
+        let now = Date()
+
+        let filtered = dayEvents.filter { event in
+            if isToday && !event.isAllDay && event.endDate < now {
+                return false // Hide already ended events for today
+            }
+            return true
+        }.sorted { e1, e2 in
+            if e1.isAllDay != e2.isAllDay {
+                return e1.isAllDay && !e2.isAllDay
+            }
+            return e1.startDate < e2.startDate
+        }
+
+        self.events = filtered
+
+        if isToday {
+            updateMochiState(allTodayEvents: dayEvents, isToday: true, now: now)
+        } else {
+            let todayStart = cal.startOfDay(for: now)
+            if let todayEnd = cal.date(byAdding: .day, value: 1, to: todayStart) {
+                let todayPredicate = eventStore.predicateForEvents(withStart: todayStart, end: todayEnd, calendars: nil)
+                let todayEvents = eventStore.events(matching: todayPredicate)
+                updateMochiState(allTodayEvents: todayEvents, isToday: true, now: now)
+            }
+        }
+    }
+
+    private func updateMochiState(allTodayEvents: [EKEvent], isToday: Bool, now: Date) {
+        guard isToday else { return }
+
+        // Find upcoming non-all-day meetings today
+        let upcoming = allTodayEvents.filter { !$0.isAllDay && $0.startDate >= now }
+            .sorted { $0.startDate < $1.startDate }
+
+        if let nextEvent = upcoming.first {
+            let diffSeconds = nextEvent.startDate.timeIntervalSince(now)
+            let minutes = Int(diffSeconds / 60)
+            self.nextMeetingMinutes = minutes
+
+            if minutes <= 15 && minutes >= 0 {
+                NotificationCenter.default.post(name: .triggerEmote, object: BotEmote.listening)
+            }
+        } else {
+            self.nextMeetingMinutes = nil
+            // If all events for today are finished, Mochi is happy
+            if !allTodayEvents.isEmpty && allTodayEvents.allSatisfy({ $0.endDate < now || $0.isAllDay }) {
+                NotificationCenter.default.post(name: .triggerEmote, object: BotEmote.happy)
+            }
+        }
+    }
+
+    private func startTimer() {
+        timer = Timer.scheduledTimer(withTimeInterval: 60, repeats: true) { [weak self] _ in
+            MainActor.assumeIsolated {
+                self?.loadEvents()
+            }
+        }
+        timer?.tolerance = 5
+    }
+
+    static func extractMeetingURL(from event: EKEvent) -> URL? {
+        if let url = event.url, isVideoConferenceURL(url) {
+            return url
+        }
+
+        let content = "\(event.location ?? "") \n \(event.notes ?? "")"
+        if let detected = findFirstConferenceURL(in: content) {
+            return detected
+        }
+
+        if let url = event.url, url.scheme == "https" || url.scheme == "http" {
+            return url
+        }
+
+        return nil
+    }
+
+    private static func isVideoConferenceURL(_ url: URL) -> Bool {
+        let host = url.host?.lowercased() ?? ""
+        return host.contains("zoom.us")
+            || host.contains("meet.google.com")
+            || host.contains("teams.microsoft.com")
+            || host.contains("webex.com")
+            || host.contains("facetime.apple.com")
+    }
+
+    private static func findFirstConferenceURL(in text: String) -> URL? {
+        guard !text.isEmpty,
+              let detector = try? NSDataDetector(types: NSTextCheckingResult.CheckingType.link.rawValue) else {
+            return nil
+        }
+        let matches = detector.matches(in: text, options: [], range: NSRange(location: 0, length: text.utf16.count))
+        for match in matches {
+            if let url = match.url, isVideoConferenceURL(url) {
+                return url
+            }
+        }
+        return nil
+    }
+
+    static func openInCalendar(event: EKEvent? = nil) {
+        if let app = NSWorkspace.shared.runningApplications.first(where: { $0.bundleIdentifier == "com.apple.iCal" }) {
+            app.activate(options: .activateIgnoringOtherApps)
+        } else if let url = NSWorkspace.shared.urlForApplication(withBundleIdentifier: "com.apple.iCal") {
+            NSWorkspace.shared.openApplication(at: url, configuration: .init(), completionHandler: nil)
+        } else {
+            NSWorkspace.shared.open(URL(fileURLWithPath: "/System/Applications/Calendar.app"))
+        }
+    }
+}
+
+// MARK: - Calendar Island View
+
+struct CalendarIslandView: View {
+    @ObservedObject var state: AppState
+    @ObservedObject private var service = CalendarService.shared
+
+    @State private var isHoveringDateStrip = false
+    @State private var isHoveringCard = false
+    @State private var scrollMonitor: Any? = nil
+    @State private var lastScrollTime: Date = .distantPast
+    @State private var accumulatedScrollDeltaX: CGFloat = 0
+    @State private var accumulatedScrollDeltaY: CGFloat = 0
+
+    var body: some View {
+        ZStack {
+            CardBackground(wash: nil)
+
+            VStack(alignment: .leading, spacing: 6) {
+                // Top: Date strip
+                CalendarDateStrip(service: service)
+                    .onHover { isHoveringDateStrip = $0 }
+
+                Rectangle()
+                    .fill(Color.white.opacity(0.06))
+                    .frame(height: 1)
+
+                // Bottom: Events or status
+                Group {
+                    if !service.isAuthorized {
+                        CalendarPermissionView(service: service)
+                    } else if service.events.isEmpty {
+                        CalendarEmptyView()
+                    } else {
+                        ScrollView(.vertical, showsIndicators: false) {
+                            VStack(spacing: 3) {
+                                ForEach(service.events, id: \.eventIdentifier) { event in
+                                    CalendarEventRow(event: event)
+                                }
+                            }
+                        }
+                    }
+                }
+                .id(service.selectedDate)
+                .transition(
+                    .asymmetric(
+                        insertion: .move(edge: service.transitionDirection == .forward ? .trailing : .leading)
+                            .combined(with: .opacity),
+                        removal: .move(edge: service.transitionDirection == .forward ? .leading : .trailing)
+                            .combined(with: .opacity)
+                    )
+                )
+                .frame(maxHeight: .infinity)
+                .clipped()
+            }
+            .padding(.leading, 108)
+            .padding(.trailing, 16)
+            .padding(.vertical, 8)
+        }
+        .contentShape(Rectangle())
+        .onHover { isHoveringCard = $0 }
+        .gesture(
+            DragGesture(minimumDistance: 15)
+                .onEnded { value in
+                    if value.translation.width < -25 {
+                        withAnimation(.spring(response: 0.28, dampingFraction: 0.8)) {
+                            service.selectNextDay()
+                        }
+                    } else if value.translation.width > 25 {
+                        withAnimation(.spring(response: 0.28, dampingFraction: 0.8)) {
+                            service.selectPreviousDay()
+                        }
+                    }
+                }
+        )
+        .onAppear {
+            service.loadEvents()
+            setupScrollMonitor()
+        }
+        .onDisappear {
+            removeScrollMonitor()
+        }
+    }
+
+    private func setupScrollMonitor() {
+        guard scrollMonitor == nil else { return }
+        scrollMonitor = NSEvent.addLocalMonitorForEvents(matching: .scrollWheel) { [weak service] event in
+            guard let service = service, isHoveringCard else { return event }
+
+            // 1. Immediately drop ALL momentum events.
+            // When fingers are lifted, inertia must never keep scrolling days.
+            if !event.momentumPhase.isEmpty {
+                accumulatedScrollDeltaX = 0
+                accumulatedScrollDeltaY = 0
+                return nil
+            }
+
+            // 2. When fingers are lifted or gesture begins/ends/cancels, reset accumulators
+            if event.phase == .began || event.phase == .ended || event.phase == .cancelled {
+                accumulatedScrollDeltaX = 0
+                accumulatedScrollDeltaY = 0
+                if event.phase != .began {
+                    return nil
+                }
+            }
+
+            let now = Date()
+
+            let trackpadSpeed = MainActor.assumeIsolated {
+                max(0.2, AppState.shared.calendarTrackpadScrollSpeed)
+            }
+            let mouseSpeed = MainActor.assumeIsolated {
+                max(0.2, AppState.shared.calendarMouseScrollSpeed)
+            }
+
+            let trackpadThreshold: CGFloat = 55.0 / trackpadSpeed
+            let trackpadCooldown: TimeInterval = 0.25 / trackpadSpeed
+            let mouseCooldown: TimeInterval = 0.30 / mouseSpeed
+
+            // 3. Over the date strip: vertical or horizontal wheel changes days
+            if isHoveringDateStrip {
+                let deltaY = event.scrollingDeltaY
+                let deltaX = event.scrollingDeltaX
+                let primaryDelta = abs(deltaX) > abs(deltaY) ? deltaX : deltaY
+
+                if event.hasPreciseScrollingDeltas {
+                    accumulatedScrollDeltaY += primaryDelta
+                    if accumulatedScrollDeltaY <= -trackpadThreshold {
+                        accumulatedScrollDeltaY = 0
+                        if now.timeIntervalSince(lastScrollTime) >= trackpadCooldown {
+                            lastScrollTime = now
+                            Task { @MainActor in
+                                withAnimation(.spring(response: 0.28, dampingFraction: 0.8)) {
+                                    service.selectNextDay()
+                                }
+                            }
+                        }
+                    } else if accumulatedScrollDeltaY >= trackpadThreshold {
+                        accumulatedScrollDeltaY = 0
+                        if now.timeIntervalSince(lastScrollTime) >= trackpadCooldown {
+                            lastScrollTime = now
+                            Task { @MainActor in
+                                withAnimation(.spring(response: 0.28, dampingFraction: 0.8)) {
+                                    service.selectPreviousDay()
+                                }
+                            }
+                        }
+                    }
+                } else {
+                    // Physical mouse wheel: discrete notches with pacing cooldown
+                    guard abs(primaryDelta) > 0.05 else { return nil }
+                    guard now.timeIntervalSince(lastScrollTime) >= mouseCooldown else {
+                        return nil
+                    }
+
+                    lastScrollTime = now
+                    if primaryDelta < 0 {
+                        Task { @MainActor in
+                            withAnimation(.spring(response: 0.28, dampingFraction: 0.8)) {
+                                service.selectNextDay()
+                            }
+                        }
+                    } else if primaryDelta > 0 {
+                        Task { @MainActor in
+                            withAnimation(.spring(response: 0.28, dampingFraction: 0.8)) {
+                                service.selectPreviousDay()
+                            }
+                        }
+                    }
+                }
+                return nil
+            }
+
+            // 4. Over the events list: only handle horizontal 2-finger swipe (vertical scrolls the event list)
+            let deltaX = event.scrollingDeltaX
+            let deltaY = event.scrollingDeltaY
+            if abs(deltaX) > abs(deltaY) && abs(deltaX) > 2 {
+                if event.hasPreciseScrollingDeltas {
+                    accumulatedScrollDeltaX += deltaX
+                    if accumulatedScrollDeltaX <= -trackpadThreshold {
+                        accumulatedScrollDeltaX = 0
+                        if now.timeIntervalSince(lastScrollTime) >= trackpadCooldown {
+                            lastScrollTime = now
+                            Task { @MainActor in
+                                withAnimation(.spring(response: 0.28, dampingFraction: 0.8)) {
+                                    service.selectNextDay()
+                                }
+                            }
+                        }
+                    } else if accumulatedScrollDeltaX >= trackpadThreshold {
+                        accumulatedScrollDeltaX = 0
+                        if now.timeIntervalSince(lastScrollTime) >= trackpadCooldown {
+                            lastScrollTime = now
+                            Task { @MainActor in
+                                withAnimation(.spring(response: 0.28, dampingFraction: 0.8)) {
+                                    service.selectPreviousDay()
+                                }
+                            }
+                        }
+                    }
+                } else {
+                    guard abs(deltaX) > 0.05 else { return nil }
+                    guard now.timeIntervalSince(lastScrollTime) >= mouseCooldown else {
+                        return nil
+                    }
+
+                    lastScrollTime = now
+                    if deltaX < 0 {
+                        Task { @MainActor in
+                            withAnimation(.spring(response: 0.28, dampingFraction: 0.8)) {
+                                service.selectNextDay()
+                            }
+                        }
+                    } else if deltaX > 0 {
+                        Task { @MainActor in
+                            withAnimation(.spring(response: 0.28, dampingFraction: 0.8)) {
+                                service.selectPreviousDay()
+                            }
+                        }
+                    }
+                }
+                return nil
+            }
+
+            return event
+        }
+    }
+
+    private func removeScrollMonitor() {
+        if let monitor = scrollMonitor {
+            NSEvent.removeMonitor(monitor)
+            scrollMonitor = nil
+        }
+    }
+}
+
+// MARK: - Calendar Date Strip (Matches User Mockup)
+
+struct CalendarDateStrip: View {
+    @ObservedObject var service: CalendarService
+    @State private var isMonthHovered = false
+
+    private var calendar: Calendar { Calendar.current }
+    private var today: Date { Calendar.current.startOfDay(for: Date()) }
+
+    private static let monthFormatter: DateFormatter = {
+        let f = DateFormatter()
+        f.locale = Locale.current
+        f.dateFormat = "LLL"
+        return f
+    }()
+
+    private static let weekdayFormatter: DateFormatter = {
+        let f = DateFormatter()
+        f.locale = Locale.current
+        f.dateFormat = "EE"
+        return f
+    }()
+
+    private static let dayNumberFormatter: DateFormatter = {
+        let f = DateFormatter()
+        f.dateFormat = "dd"
+        return f
+    }()
+
+    private var monthLabel: String {
+        var str = Self.monthFormatter.string(from: service.selectedDate).uppercased()
+        if !str.hasSuffix(".") { str += "." }
+        return str
+    }
+
+    private var isNotToday: Bool {
+        !calendar.isDateInToday(service.selectedDate)
+    }
+
+    var body: some View {
+        HStack(alignment: .center, spacing: 14) {
+            // Month label: bold uppercase short month (e.g., "ОКТ.")
+            // Clicking returns to today if not on today
+            Button(action: {
+                if isNotToday {
+                    withAnimation(.spring(response: 0.28, dampingFraction: 0.8)) {
+                        service.selectToday()
+                    }
+                }
+            }) {
+                HStack(spacing: 4) {
+                    Text(monthLabel)
+                        .font(.system(size: 14, weight: .black))
+                        .foregroundColor(Color(hex: "#F5F6F8"))
+                        .fixedSize()
+
+                    if isNotToday {
+                        Image(systemName: "arrow.uturn.backward.circle.fill")
+                            .font(.system(size: 10, weight: .semibold))
+                            .foregroundColor(isMonthHovered ? Color(hex: "#38BDF8") : Color(hex: "#0A84FF").opacity(0.85))
+                            .transition(.scale.combined(with: .opacity))
+                    }
+                }
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .onHover { isMonthHovered = $0 }
+            .help(isNotToday ? String(localized: "Return to Today") : "")
+
+            // 7-day horizontal strip (-3...3 relative to selectedDate)
+            HStack(spacing: 0) {
+                let dates = (-3...3).compactMap { calendar.date(byAdding: .day, value: $0, to: service.selectedDate) }
+                ForEach(dates, id: \.self) { date in
+                    let isToday = calendar.isDateInToday(date)
+                    let isSelected = calendar.isDate(date, inSameDayAs: service.selectedDate)
+                    let dayStart = calendar.startOfDay(for: date)
+                    let hasEvents = service.daysWithEvents.contains(dayStart)
+
+                    Button(action: {
+                        withAnimation(.spring(response: 0.28, dampingFraction: 0.8)) {
+                            service.select(date: date)
+                        }
+                    }) {
+                        VStack(spacing: 2) {
+                            // Weekday abbreviation
+                            Text(Self.weekdayFormatter.string(from: date).uppercased())
+                                .font(.system(size: 9.5, weight: isSelected ? .bold : .medium))
+                                .foregroundColor(isSelected ? Color(hex: "#F5F6F8") : Color(hex: "#6B7079"))
+                                .lineLimit(1)
+
+                            // Day number (09, 10, ...)
+                            Text(Self.dayNumberFormatter.string(from: date))
+                                .font(.system(size: 13, weight: isToday ? .heavy : (isSelected ? .bold : .medium)))
+                                .foregroundColor(
+                                    isToday ? Color(hex: "#0A84FF") :
+                                    (isSelected ? Color(hex: "#F5F6F8") : Color(hex: "#8E939C"))
+                                )
+
+                            // Dot indicator below number
+                            Circle()
+                                .fill(
+                                    isToday ? Color(hex: "#0A84FF") :
+                                    (hasEvents ? Color(hex: "#38BDF8").opacity(0.45) : Color.clear)
+                                )
+                                .frame(width: isToday ? 4 : 3, height: isToday ? 4 : 3)
+                        }
+                        .frame(maxWidth: .infinity)
+                        .padding(.vertical, 2)
+                        .background(
+                            RoundedRectangle(cornerRadius: 6)
+                                .fill(isSelected && !isToday ? Color.white.opacity(0.06) : Color.clear)
+                        )
+                    }
+                    .buttonStyle(.plain)
+                }
+            }
+        }
+    }
+}
+
+// MARK: - Calendar Event Row
+
+struct CalendarEventRow: View {
+    let event: EKEvent
+    @State private var isHovered = false
+
+    private static let timeFormatter: DateFormatter = {
+        let f = DateFormatter()
+        f.timeStyle = .short
+        f.dateStyle = .none
+        return f
+    }()
+
+    private var timeString: String {
+        if event.isAllDay {
+            return String(localized: "All day")
+        }
+        let start = Self.timeFormatter.string(from: event.startDate)
+        let end = Self.timeFormatter.string(from: event.endDate)
+        return "\(start) – \(end)"
+    }
+
+    private var calendarColor: Color {
+        Color(cgColor: event.calendar.cgColor)
+    }
+
+    private var meetingURL: URL? {
+        CalendarService.extractMeetingURL(from: event)
+    }
+
+    var body: some View {
+        Button(action: {
+            CalendarService.openInCalendar(event: event)
+        }) {
+            HStack(spacing: 8) {
+                // Event title
+                Text(event.title ?? String(localized: "Event"))
+                    .font(.system(size: 12, weight: .semibold))
+                    .foregroundColor(Color(hex: "#F5F6F8"))
+                    .lineLimit(1)
+                    .truncationMode(.tail)
+
+                // Calendar color dot
+                Circle()
+                    .fill(calendarColor)
+                    .frame(width: 6, height: 6)
+
+                // Time range
+                Text(timeString)
+                    .font(.system(size: 11, weight: .medium, design: .monospaced))
+                    .foregroundColor(Color(hex: "#8E939C"))
+                    .lineLimit(1)
+                    .fixedSize()
+
+                Spacer(minLength: 4)
+
+                // Video conference quick-join button
+                if let url = meetingURL {
+                    Button(action: {
+                        NSWorkspace.shared.open(url)
+                    }) {
+                        HStack(spacing: 3) {
+                            Image(systemName: "video.fill")
+                                .font(.system(size: 8.5))
+                            Text(String(localized: "Join"))
+                                .font(.system(size: 10, weight: .semibold))
+                        }
+                        .padding(.horizontal, 6)
+                        .padding(.vertical, 2.5)
+                        .background(Color(hex: "#0A84FF").opacity(0.18))
+                        .foregroundColor(Color(hex: "#38BDF8"))
+                        .clipShape(Capsule())
+                    }
+                    .buttonStyle(.plain)
+                    .help(url.absoluteString)
+                }
+            }
+            .padding(.horizontal, 8)
+            .padding(.vertical, 4)
+            .background(
+                RoundedRectangle(cornerRadius: 6)
+                    .fill(isHovered ? Color.white.opacity(0.06) : Color.clear)
+            )
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .onHover { isHovered = $0 }
+    }
+}
+
+// MARK: - Calendar Empty State
+
+struct CalendarEmptyView: View {
+    var body: some View {
+        HStack(spacing: 8) {
+            Image(systemName: "calendar.badge.clock")
+                .font(.system(size: 13))
+                .foregroundColor(Color(hex: "#6B7079"))
+            Text(String(localized: "No upcoming events for this day"))
+                .font(.system(size: 11.5))
+                .foregroundColor(Color(hex: "#8E939C"))
+            Spacer()
+        }
+        .frame(maxHeight: .infinity)
+        .padding(.horizontal, 8)
+    }
+}
+
+// MARK: - Calendar Permission State
+
+struct CalendarPermissionView: View {
+    @ObservedObject var service: CalendarService
+
+    var body: some View {
+        HStack(spacing: 12) {
+            Image(systemName: "calendar")
+                .font(.system(size: 16))
+                .foregroundColor(Color(hex: "#8E939C"))
+
+            if service.authorizationStatus == .notDetermined {
+                Text(String(localized: "Connect Apple Calendar to see your schedule."))
+                    .font(.system(size: 11.5))
+                    .foregroundColor(Color(hex: "#8E939C"))
+                    .lineLimit(2)
+                Spacer()
+                PrimaryButton(String(localized: "Allow Access")) {
+                    service.requestAccess()
+                }
+            } else {
+                Text(String(localized: "Calendar access is disabled. Please enable it in macOS System Settings."))
+                    .font(.system(size: 11))
+                    .foregroundColor(Color(hex: "#8E939C"))
+                    .lineLimit(2)
+                Spacer()
+                SecondaryButton(String(localized: "Open Settings")) {
+                    if let url = URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_Calendars") {
+                        NSWorkspace.shared.open(url)
+                    }
+                }
+            }
+        }
+        .frame(maxHeight: .infinity)
+        .padding(.horizontal, 8)
     }
 }

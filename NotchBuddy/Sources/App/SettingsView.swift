@@ -350,6 +350,34 @@ struct SettingsView: View {
             .padding(6)
         }
 
+        GroupBox(String(localized: "Calendar scroll speed")) {
+            VStack(alignment: .leading, spacing: 10) {
+                Text(String(localized: "Adjust how fast days change when scrolling in the calendar tab."))
+                    .font(.system(size: 11))
+                    .foregroundColor(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+
+                HStack(spacing: 8) {
+                    Text(String(localized: "Trackpad"))
+                        .frame(width: 86, alignment: .leading)
+                    Slider(value: $state.calendarTrackpadScrollSpeed, in: 0.4...2.0, step: 0.1)
+                    Text("\(Int(state.calendarTrackpadScrollSpeed * 100)) %")
+                        .frame(width: 44, alignment: .trailing)
+                        .monospacedDigit()
+                }
+
+                HStack(spacing: 8) {
+                    Text(String(localized: "Mouse wheel"))
+                        .frame(width: 86, alignment: .leading)
+                    Slider(value: $state.calendarMouseScrollSpeed, in: 0.4...2.0, step: 0.1)
+                    Text("\(Int(state.calendarMouseScrollSpeed * 100)) %")
+                        .frame(width: 44, alignment: .trailing)
+                        .monospacedDigit()
+                }
+            }
+            .padding(6)
+        }
+
         GroupBox("Display") {
             VStack(alignment: .leading, spacing: 10) {
                 Picker("Show Mochi on", selection: $state.islandDisplay) {
@@ -519,7 +547,7 @@ struct SettingsView: View {
                     .foregroundColor(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
 
-                let activeCount = [state.showHomeTab, state.showChatTab, state.showFilesTab].filter { $0 }.count
+                let activeCount = [state.showHomeTab, state.showChatTab, state.showCalendarTab, state.showFilesTab].filter { $0 }.count
 
                 HStack(spacing: 12) {
                     Image(systemName: "house.fill")
@@ -537,6 +565,15 @@ struct SettingsView: View {
                         .frame(width: 20)
                     Toggle(String(localized: "Chat (AI Assistant)"), isOn: $state.showChatTab)
                         .disabled(state.showChatTab && activeCount <= 1)
+                }
+
+                HStack(spacing: 12) {
+                    Image(systemName: "calendar")
+                        .font(.system(size: 13))
+                        .foregroundColor(Color(hex: "#8E939C"))
+                        .frame(width: 20)
+                    Toggle(String(localized: "Calendar (Upcoming Events)"), isOn: $state.showCalendarTab)
+                        .disabled(state.showCalendarTab && activeCount <= 1)
                 }
 
                 HStack(spacing: 12) {

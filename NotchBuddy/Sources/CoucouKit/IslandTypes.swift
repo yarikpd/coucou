@@ -10,7 +10,7 @@ enum IslandMode: String, CaseIterable {
 
 enum IslandView: String, CaseIterable {
     case overview, empty, approval, question, error, finished
-    case confused, upload, uploading, choose, mail, prompt
+    case confused, upload, uploading, choose, mail, prompt, calendar
     case searching, result, note, settings, greeting, wardrobe, recap
     case listening    // voice wake detected — "À l'écoute…" with live transcript
     case voiceResult  // voice command executed — "✓ Musique lancée" for ~2 s
@@ -204,6 +204,7 @@ enum IslandConst {
         .choose:    ViewLayout(height: 176, botX: 60,  botY: 101, botDiameter: 52, agentMode: .column),
         .mail:      ViewLayout(height: 240, botX: 56,  botY: nil, botDiameter: 46, agentMode: .column),
         .prompt:    ViewLayout(height: 160, botX: 52,  botY: nil, botDiameter: 44, agentMode: .column),
+        .calendar:  ViewLayout(height: 160, botX: 68,  botY: nil, botDiameter: 58, agentMode: .column),
         .searching: ViewLayout(height: 160, botX: 52,  botY: nil, botDiameter: 44, agentMode: .column),
         .result:    ViewLayout(height: 160, botX: 52,  botY: nil, botDiameter: 44, agentMode: .column),
         .note:      ViewLayout(height: 160, botX: 60,  botY: nil, botDiameter: 50, agentMode: .column),

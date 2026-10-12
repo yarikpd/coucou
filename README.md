@@ -43,7 +43,8 @@ Meet **Mochi**: a soft little squircle with big eyes that pops out of your notch
 - 📊 **Claude plan usage** *(macOS, GitHub build)* — a small pill in the notch header shows your 5-hour and weekly Claude plan limits. Enable it from Settings → Agents → Plan usage. Pro and Max plans only.
 - 📊 **Codex plan usage** *(macOS, GitHub build)* — a Codex pill next to it shows your Codex limits and how many free resets you have left, read from the Codex CLI. Turn it on in Settings → Agents → Plan usage.
 - 📋 **Declare the tools you use** — open Settings → Active pills and pick your main workspace tool (VS Code, Cursor, Codex or Antigravity), then toggle up to 4 more: Gemini CLI, Anthropic, Google AI, OpenAI, Ollama, LM Studio and service integrations *(macOS)*.
-- 🗂️ **Customize island tabs** *(macOS)* — choose which tabs appear in the notch header: Home, Chat and Files. Toggle them in Settings → Tabs; Coucou keeps at least one tab active so the island is never left without navigation.
+- 🗂️ **Customize island tabs** *(macOS)* — choose which tabs appear in the notch header: Home, Chat, Calendar, and Files. Toggle them in Settings → Tabs; Coucou keeps at least one tab active so the island is never left without navigation.
+- 📅 **Apple Calendar integration** *(macOS)* — upcoming events right in the notch with an interactive 7-day strip centered on your selected date, smooth swipe and mouse-wheel navigation with adjustable scroll speed (Settings → General), time indicators, and video call shortcuts (Google Meet, Zoom, Teams, Webex, FaceTime). Click any event to open it in Apple Calendar; Mochi gets attentive 15 minutes before your meetings and celebrates when your day is clear.
 - 📎 **Drop a file on the notch** — Mochi turns into a box and swallows it, then ask a question about it or send it by email *(email: macOS, Mail.app)*.
 - 🖥️ **Mochi on the desktop** — drag Mochi out of the island to set him loose on your desktop: he floats as a 120 pt companion, follows your cursor, wears his outfit, reacts to alerts by flying home and flying back, and comes back where you left him on next launch.
 - 🪟 **Drag Mochi onto any window** — attach that window as context for Claude *(macOS)*.
@@ -278,7 +279,8 @@ Click the Coucou icon in the menu bar (macOS) or in the system tray (Windows, Li
 | **iPhone** *(macOS)* | sessions, approvals, questions and Mochi on your iPhone | Settings → General → iPhone · your private iCloud, see [docs/IPHONE.md](docs/IPHONE.md) |
 | **Android phone** *(Windows, Linux)* | sessions, approvals, questions and chat on your Android phone | Settings → Android phone · off by default, your local network only, see [android/README.md](android/README.md) |
 | **Active pills** *(macOS)* | choose which tools and agents appear in the island | Settings → Active pills |
-| **Island tabs** *(macOS)* | choose which tabs appear in the notch header (Home, Chat, Files) | Settings → Tabs |
+| **Island tabs** *(macOS)* | choose which tabs appear in the notch header (Home, Chat, Calendar, Files) | Settings → Tabs |
+| **Calendar scroll speed** *(macOS)* | configure separate trackpad and mouse wheel scroll speeds for calendar day switching | Settings → General |
 | Stripe, n8n, GitHub, Vercel, Resend, Notion, Cal.com | the service pills | Keychain / Windows Credential Manager / Secret Service, all optional |
 
 If Coucou isn't running, the hook exits immediately: **Claude Code is never blocked.**

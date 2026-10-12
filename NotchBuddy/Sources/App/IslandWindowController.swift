@@ -1258,6 +1258,8 @@ final class IslandWindowController: NSWindowController {
             return state.tasks.isEmpty ? .empty : .overview
         } else if state.showChatTab {
             return .prompt
+        } else if state.showCalendarTab {
+            return .calendar
         } else if state.showFilesTab {
             return .upload
         }
