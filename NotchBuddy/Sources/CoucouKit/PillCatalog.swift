@@ -55,6 +55,7 @@ struct PillDefinition {
         switch id {
         case "integration_claude": return "Claude Code"
         case "agent_cursor":       return "Cursor"
+        case "agent_antigravity":  return "Antigravity"
         case "agent_codex":        return "Codex"
         case "agent_hermes":       return "Hermes"
         case "agent_claude-desktop": return "Claude Desktop"

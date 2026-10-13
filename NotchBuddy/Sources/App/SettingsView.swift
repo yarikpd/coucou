@@ -83,6 +83,9 @@ struct SettingsView: View {
     @State private var pendingHermesConfigContent: String = ""
     @AppStorage("hermesApprovalsEnabled") private var hermesApprovalsEnabled: Bool = false
     @State private var hermesSupportsApprovals: Bool = false
+    @AppStorage("agyApproveEdits") private var agyApproveEdits: Bool = true
+    @AppStorage("agyApproveCommands") private var agyApproveCommands: Bool = true
+    @AppStorage("agyApproveWorkspaceEdits") private var agyApproveWorkspaceEdits: Bool = false
     #endif
 
     // Multi-provider chat keys
@@ -913,6 +916,12 @@ struct SettingsView: View {
                     Button(String(localized: "hooks.uninstall")) { triggerAgyPreview(install: false) }
                         .buttonStyle(.bordered)
                 }
+                Toggle(String(localized: "hooks.antigravity.approve-commands"), isOn: $agyApproveCommands)
+                    .font(.system(size: 11.5))
+                Toggle(String(localized: "hooks.antigravity.approve-outside-files"), isOn: $agyApproveEdits)
+                    .font(.system(size: 11.5))
+                Toggle(String(localized: "hooks.antigravity.approve-workspace-edits"), isOn: $agyApproveWorkspaceEdits)
+                    .font(.system(size: 11.5))
                 if showAgyDiff {
                     ScrollView {
                         Text(pendingAgyJSON)

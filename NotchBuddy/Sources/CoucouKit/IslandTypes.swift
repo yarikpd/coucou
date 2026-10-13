@@ -50,7 +50,7 @@ struct ApprovalInfo: Sendable {
     var command: String
     /// tool_input serialized to JSON with sortedKeys, "" if absent — used to match PostToolUse.
     var inputKey: String
-    /// Pill that owns this approval: "integration_claude", "agent_cursor", or "agent_codex".
+    /// Pill that owns this approval: "integration_claude", "agent_cursor", "agent_codex", or "agent_antigravity".
     var pillId: String
     /// Queued request this card answers (Mac): a decision is only accepted for this id.
     var id: UUID = UUID()
@@ -58,6 +58,8 @@ struct ApprovalInfo: Sendable {
     var queueCount: Int = 1
     /// Project of the session that asks (several sessions can share one pill).
     var projectName: String = ""
+    /// Live diff preview when the approval is for a file edit or write tool.
+    var diff: FileDiff? = nil
 }
 
 // MARK: - Pill badge (shown on pill edge when non-focused task has an alert)

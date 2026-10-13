@@ -57,8 +57,171 @@ final class HookServer: @unchecked Sendable {
     private var activeSessionId: String? = nil        // current Claude Code session
     private var focusBeforeApproval: String? = nil    // saved focus to restore after approval
     private var sessions = PillSessionRegistry()      // live sessions behind each pill
+    /// Snapshots of existing files taken at PreToolUse before Write / write_to_file overwrites them.
+    @MainActor private var preToolFileSnapshots: [String: String] = [:]
+
+    // Antigravity process monitoring & watchdog
+    private var agyTerminateObserver: NSObjectProtocol?
+    private var agyWatchdogTimer: Timer?
+    @MainActor private var lastAgyEventTime: Date = Date()
+    @MainActor private var lastAgyTranscriptPath: String? = nil
 
     private init() {}
+
+    // MARK: - Antigravity Lifecycle & Watchdog
+
+    static func isAntigravityApp(_ app: NSRunningApplication) -> Bool {
+        let agyBundleIds = ["com.google.antigravity", "com.google.Antigravity", "com.google.antigravity.ide"]
+        if let bid = app.bundleIdentifier?.lowercased() {
+            if agyBundleIds.contains(where: { bid == $0.lowercased() }) || bid.contains("antigravity") {
+                return true
+            }
+        }
+        if let name = app.localizedName?.lowercased(), name.contains("antigravity") {
+            return true
+        }
+        return false
+    }
+
+    static func isAntigravityRunning() -> Bool {
+        NSWorkspace.shared.runningApplications.contains { isAntigravityApp($0) }
+    }
+
+    @MainActor
+    func handleAntigravityTerminated() {
+        nbLog("Antigravity process terminated / idle reset")
+        let state = AppState.shared
+        let agentId = "agent_antigravity"
+
+        // 1. Remove pending approvals for Antigravity
+        let agyApprovalIds = approvals.entries.filter { $0.pillId == agentId }.map(\.id)
+        for id in agyApprovalIds {
+            removeApproval(id: id, note: nil)
+        }
+
+        // 2. Clear sessions in registry
+        sessions.clear(pill: agentId)
+
+        // 3. Reset task to idle and clear badges
+        state.updateTask(id: agentId, state: .idle)
+        clearPillBadge(id: agentId)
+
+        // 4. Clear pending question if any
+        if questionPillId == agentId {
+            dismissQuestionCard(note: "")
+        }
+
+        // 5. If island is focused on Antigravity in approval state, restore overview/collapse
+        if state.focusId == agentId {
+            if state.view == .approval || state.view == .note {
+                state.view = state.tasks.isEmpty ? .empty : .overview
+                NotificationCenter.default.post(name: .islandCollapse, object: nil)
+            }
+        }
+    }
+
+    @MainActor
+    private func setupAntigravityObservers() {
+        guard agyTerminateObserver == nil else { return }
+        agyTerminateObserver = NSWorkspace.shared.notificationCenter.addObserver(
+            forName: NSWorkspace.didTerminateApplicationNotification,
+            object: nil,
+            queue: .main
+        ) { [weak self] notif in
+            guard let self else { return }
+            let app = notif.userInfo?[NSWorkspace.applicationUserInfoKey] as? NSRunningApplication
+            if let app, Self.isAntigravityApp(app) {
+                if !Self.isAntigravityRunning() {
+                    self.handleAntigravityTerminated()
+                }
+            }
+        }
+
+        agyWatchdogTimer = Timer.scheduledTimer(withTimeInterval: 2.0, repeats: true) { [weak self] _ in
+            Task { @MainActor [weak self] in
+                self?.checkAntigravityWatchdog()
+            }
+        }
+    }
+
+    @MainActor
+    private func checkAntigravityWatchdog() {
+        let state = AppState.shared
+        let agentId = "agent_antigravity"
+        guard let task = state.tasks.first(where: { $0.id == agentId }) else { return }
+        guard task.state == .working || task.state == .thinking || task.state == .approval else { return }
+
+        // If Antigravity is not running at all, reset immediately
+        if !Self.isAntigravityRunning() {
+            nbLog("Antigravity watchdog: app is not running, resetting to idle")
+            handleAntigravityTerminated()
+            return
+        }
+
+        // If waiting for approval, leave to user / approval timeout
+        if task.state == .approval || approvals.hasEntries(forPill: agentId) { return }
+
+        // Check if transcript indicates turn is done
+        if let tPath = lastAgyTranscriptPath, checkTranscriptIsDone(path: tPath) {
+            nbLog("Antigravity watchdog: transcript indicates turn is done, resetting to idle")
+            _ = sessions.endTurn(pill: agentId, session: "")
+            state.updateTask(id: agentId, state: .idle)
+            clearPillBadge(id: agentId)
+            return
+        }
+
+        // Silence timeout: if no events for > 45 seconds while in working/thinking
+        let silence = Date().timeIntervalSince(lastAgyEventTime)
+        if silence > 45 {
+            nbLog("Antigravity watchdog: silence > 45s (\(Int(silence))s), resetting to idle")
+            _ = sessions.endTurn(pill: agentId, session: "")
+            state.updateTask(id: agentId, state: .idle)
+            clearPillBadge(id: agentId)
+        }
+    }
+
+    private func checkTranscriptIsDone(path: String) -> Bool {
+        guard FileManager.default.fileExists(atPath: path),
+              let attrs = try? FileManager.default.attributesOfItem(atPath: path),
+              let modDate = attrs[.modificationDate] as? Date,
+              Date().timeIntervalSince(modDate) > 3.0,
+              let fileHandle = FileHandle(forReadingAtPath: path) else {
+            return false
+        }
+        defer { try? fileHandle.close() }
+
+        let fileSize = (attrs[.size] as? UInt64) ?? 0
+        guard fileSize > 0 else { return false }
+        let readLength = min(fileSize, 4096)
+        let offset = fileSize - readLength
+        try? fileHandle.seek(toOffset: offset)
+        guard let data = try? fileHandle.read(upToCount: Int(readLength)),
+              let text = String(data: data, encoding: .utf8) else {
+            return false
+        }
+
+        let lines = text.split(separator: "\n").map(String.init).filter { !$0.trimmingCharacters(in: .whitespaces).isEmpty }
+        guard let lastLine = lines.last,
+              let obj = try? JSONSerialization.jsonObject(with: Data(lastLine.utf8)) as? [String: Any] else {
+            return false
+        }
+
+        let status = obj["status"] as? String ?? ""
+        let type = obj["type"] as? String ?? ""
+
+        if (status == "DONE" || status == "ERROR" || status == "CANCELLED"),
+           (type == "PLANNER_RESPONSE" || type == "GENERIC") {
+            if type == "PLANNER_RESPONSE" {
+                let toolCalls = obj["tool_calls"] as? [[String: Any]] ?? []
+                if toolCalls.isEmpty {
+                    return true
+                }
+            } else if type == "GENERIC" {
+                return true
+            }
+        }
+        return false
+    }
 
     // MARK: - Approval queue helpers
 
@@ -66,12 +229,13 @@ final class HookServer: @unchecked Sendable {
     @MainActor
     private func handledNote(pill: String) -> String {
         switch pill {
-        case "agent_cursor":  return "Handled in Cursor."
-        case "agent_codex":   return "Handled in Codex."
-        case "agent_copilot": return "Handled in Copilot CLI."
-        case "agent_muse":    return "Handled in Muse Code."
-        case "agent_hermes":  return "Handled in Hermes."
-        default:              return "Handled in \(claudeHostName)."
+        case "agent_cursor":      return "Handled in Cursor."
+        case "agent_antigravity": return String(localized: "Handled in Antigravity.")
+        case "agent_codex":       return "Handled in Codex."
+        case "agent_copilot":     return "Handled in Copilot CLI."
+        case "agent_muse":        return "Handled in Muse Code."
+        case "agent_hermes":      return "Handled in Hermes."
+        default:                  return "Handled in \(claudeHostName)."
         }
     }
 
@@ -79,12 +243,13 @@ final class HookServer: @unchecked Sendable {
     @MainActor
     private func waitingNote(pill: String) -> String {
         switch pill {
-        case "agent_cursor":  return "Still waiting in Cursor."
-        case "agent_codex":   return "Still waiting in Codex."
-        case "agent_copilot": return "Still waiting in Copilot CLI."
-        case "agent_muse":    return "Still waiting in Muse Code."
-        case "agent_hermes":  return "Still waiting in Hermes."
-        default:              return "Still waiting in \(claudeHostName)."
+        case "agent_cursor":      return "Still waiting in Cursor."
+        case "agent_antigravity": return String(localized: "Still waiting in Antigravity.")
+        case "agent_codex":       return "Still waiting in Codex."
+        case "agent_copilot":     return "Still waiting in Copilot CLI."
+        case "agent_muse":        return "Still waiting in Muse Code."
+        case "agent_hermes":      return "Still waiting in Hermes."
+        default:                  return "Still waiting in \(claudeHostName)."
         }
     }
 
@@ -103,7 +268,8 @@ final class HookServer: @unchecked Sendable {
                                               command: head.command, inputKey: head.inputKey,
                                               pillId: head.pillId, id: head.id,
                                               queueCount: approvals.count,
-                                              projectName: head.projectName)
+                                              projectName: head.projectName,
+                                              diff: head.diff)
         state.isPinned = true
         // Approval always forces the island open — the user must be able to respond.
         // Save the focus once, so it comes back when the last request is gone.
@@ -134,7 +300,11 @@ final class HookServer: @unchecked Sendable {
 
         let state = AppState.shared
         if !approvals.hasEntries(forPill: entry.pillId) {
-            state.updateTask(id: entry.pillId, state: .working)
+            if entry.pillId == "agent_antigravity", !Self.isAntigravityRunning() {
+                state.updateTask(id: entry.pillId, state: .idle)
+            } else {
+                state.updateTask(id: entry.pillId, state: .working)
+            }
             clearPillBadge(id: entry.pillId)
         }
         if approvals.head != nil {
@@ -278,6 +448,7 @@ final class HookServer: @unchecked Sendable {
         try? FileManager.default.setAttributes([.posixPermissions: 0o700 as NSNumber], ofItemAtPath: dir.path)
         #if !APPSTORE
         installHookScript()
+        DispatchQueue.main.async { self.setupAntigravityObservers() }
         #endif
         Thread.detachNewThread { self.serverThread() }
     }
@@ -435,20 +606,26 @@ final class HookServer: @unchecked Sendable {
 
         // Routing:
         // • "codex" → agent_codex (GitHub build only: workspace pill, approvals in the notch)
+        // • "antigravity" → agent_antigravity (GitHub build only: workspace pill, approvals & diffs in the notch)
         // • other valid coucou_agent → external pill (fire-and-forget, no approval card)
         // • Cursor bundle ID → agent_cursor
         // • VS Code → integration_claude
         // • a known terminal (Warp, Terminal, iTerm…) → integration_claude, host recorded on the task
         #if !APPSTORE
         let isCodexEvent = rawAgent == "codex"
+        let isAntigravityEvent = rawAgent == "antigravity"
         #else
         let isCodexEvent = false
+        let isAntigravityEvent = false
         #endif
         let agentId: String
         let isExternalAgent: Bool
         var hostApp: String? = nil
         if isCodexEvent {
             agentId = "agent_codex"
+            isExternalAgent = false
+        } else if isAntigravityEvent {
+            agentId = "agent_antigravity"
             isExternalAgent = false
         } else if let agent = validAgent {
             agentId = "agent_\(agent)"
@@ -467,6 +644,15 @@ final class HookServer: @unchecked Sendable {
             nbLog("Ignored \(name) from \(termProgram.isEmpty ? bundleId : termProgram) (\(projectName))")
             return
         }
+
+        #if !APPSTORE
+        if isAntigravityEvent {
+            lastAgyEventTime = Date()
+            if let tp = payload["transcriptPath"] as? String, !tp.isEmpty {
+                lastAgyTranscriptPath = tp
+            }
+        }
+        #endif
 
         let focused = state.focusId == agentId
         // Several sessions can share one pill (it is chosen from the client, not from the
@@ -550,6 +736,15 @@ final class HookServer: @unchecked Sendable {
                        externalAgent: isExternalAgent ? validAgent : nil)
             state.updateTask(id: agentId, state: .working)
             let input = payload["tool_input"] as? [String: Any] ?? [:]
+            if tool == "Write" || tool == "write_to_file",
+               let path = (input["file_path"] as? String) ?? (input["TargetFile"] as? String),
+               !path.isEmpty,
+               FileManager.default.fileExists(atPath: path),
+               let attrs = try? FileManager.default.attributesOfItem(atPath: path),
+               let size = attrs[.size] as? Int, size <= FileDiff.maxBytes,
+               let existing = try? String(contentsOfFile: path, encoding: .utf8) {
+                preToolFileSnapshots[path] = existing
+            }
             let step = localizedStep(tool: tool, input: input)
             appendStep(id: agentId, step: step)
             nbLog("PreToolUse \(tool)")
@@ -557,10 +752,13 @@ final class HookServer: @unchecked Sendable {
         case "PostToolUse":
             sessions.note(pill: agentId, display: display, working: true)
             state.updateTask(id: agentId, state: .working)
-            // Live diff for Edit / MultiEdit / Write
+            // Live diff for Edit / MultiEdit / Write / Antigravity file tools
             let diffTool = payload["tool_name"] as? String ?? ""
             let diffInput = payload["tool_input"] as? [String: Any] ?? [:]
-            if let diff = buildFileDiff(tool: diffTool, input: diffInput, pillId: agentId) {
+            let stepIdx = payload["stepIdx"] as? Int
+            if let diff = buildFileDiff(tool: diffTool, input: diffInput, pillId: agentId,
+                                        conversationId: sessionId, stepIndex: stepIdx,
+                                        consumeSnapshot: true) {
                 let idx = state.appendSessionDiff(diff, for: agentId)
                 let step = String.makeDiffStep(filename: diff.name, added: diff.added, removed: diff.removed, diffId: idx)
                 appendStep(id: agentId, step: step)
@@ -584,7 +782,17 @@ final class HookServer: @unchecked Sendable {
                 appendStep(id: agentId, step: message)
             }
 
-        case "Stop":
+        case "Stop", "PostInvocation":
+            let terminationReason = (payload["terminationReason"] as? String)?.lowercased() ?? ""
+            let errorStr = (payload["error"] as? String)?.lowercased() ?? ""
+            let isUserCancelled = terminationReason.contains("cancel")
+                || terminationReason.contains("interrupt")
+                || terminationReason.contains("abort")
+                || terminationReason.contains("user")
+                || errorStr.contains("cancel")
+                || errorStr.contains("interrupt")
+                || errorStr.contains("abort")
+
             let scope = sessions.endTurn(pill: agentId, session: sessionId)
             let rawFinal = (payload["last_assistant_message"] as? String)
                 ?? (payload["message"] as? String) ?? ""
@@ -592,6 +800,15 @@ final class HookServer: @unchecked Sendable {
             // The step log is shared, so the conclusion is worth showing either way.
             if !finalText.isEmpty { appendStep(id: agentId, step: finalText) }
             RecapStore.shared.stop(sessionId: recapSessionId)
+
+            if isUserCancelled {
+                guard scope == .pill else { break }
+                activeSessionId = nil
+                state.updateTask(id: agentId, state: .idle)
+                clearPillBadge(id: agentId)
+                break
+            }
+
             // Another session is still mid-turn behind this pill: the finished state, the
             // sound and the idle reset below would land on its work. Its own Stop comes later.
             guard scope == .pill else {
@@ -763,13 +980,37 @@ final class HookServer: @unchecked Sendable {
             termProgram.lowercased().contains("vscode") ||
             bundleId.lowercased().contains("vscode"))
 
-        // Codex, Copilot CLI and Muse Code get the same approval card as Claude Code / Cursor.
+        // Codex, Antigravity, Copilot CLI and Muse Code get the same approval card as Claude Code / Cursor.
         // Other external agents (any other coucou_agent) answer immediately with "ask"
         // so the agent re-asks in its own terminal — they do not get a notch card.
+        let tool = payload["tool_name"] as? String ?? "Tool"
+        let toolInput = payload["tool_input"] as? [String: Any] ?? [:]
+
         #if !APPSTORE
         let isCodexRequest   = rawAgent == "codex"
         let isCopilotRequest = rawAgent == "copilot"
         let isMuseRequest    = rawAgent == "muse"
+        let isAntigravityRequest: Bool = {
+            guard rawAgent == "antigravity" else { return false }
+            let outsideWorkspace = (payload["coucou_outside_workspace"] as? Bool) ?? false
+            switch tool {
+            case "replace_file_content", "multi_replace_file_content", "write_to_file":
+                if outsideWorkspace {
+                    return (UserDefaults.standard.object(forKey: "agyApproveEdits") as? Bool) ?? true
+                } else {
+                    return UserDefaults.standard.bool(forKey: "agyApproveWorkspaceEdits")
+                }
+            case "view_file", "list_dir", "grep_search", "find_by_name":
+                guard outsideWorkspace else { return false }
+                return (UserDefaults.standard.object(forKey: "agyApproveEdits") as? Bool) ?? true
+            case "run_command":
+                let bypassSandbox = (toolInput["BypassSandbox"] as? Bool) ?? false
+                guard bypassSandbox else { return false }
+                return (UserDefaults.standard.object(forKey: "agyApproveCommands") as? Bool) ?? true
+            default:
+                return false
+            }
+        }()
         // isHermesRequest is true only when the plugin sent coucou_has_transport: true,
         // meaning register_approval_transport is wired and Hermes will honour our choice.
         // Without that flag the request falls through to "ask" so Hermes handles it natively.
@@ -777,12 +1018,13 @@ final class HookServer: @unchecked Sendable {
             && UserDefaults.standard.bool(forKey: "hermesApprovalsEnabled")
             && (payload["coucou_has_transport"] as? Bool == true)
         #else
-        let isCodexRequest   = false
-        let isCopilotRequest = false
-        let isMuseRequest    = false
-        let isHermesRequest  = false
+        let isCodexRequest       = false
+        let isCopilotRequest     = false
+        let isMuseRequest        = false
+        let isAntigravityRequest = false
+        let isHermesRequest      = false
         #endif
-        if !isCodexRequest && !isCopilotRequest && !isMuseRequest && !isHermesRequest && Self.validateAgent(rawAgent) != nil {
+        if !isCodexRequest && !isAntigravityRequest && !isCopilotRequest && !isMuseRequest && !isHermesRequest && Self.validateAgent(rawAgent) != nil {
             Task.detached { [weak self] in
                 self?.sendLine(fd: fd, text: #"{"permissionDecision":"ask"}"#)
                 close(fd)
@@ -790,10 +1032,26 @@ final class HookServer: @unchecked Sendable {
             return
         }
 
+        // Auto-allow Antigravity unsandboxed commands whose prefix was previously granted "Always" in Coucou.
+        if isAntigravityRequest, tool == "run_command",
+           let cmd = (toolInput["command"] as? String) ?? (toolInput["CommandLine"] as? String) {
+            let trimmed = cmd.trimmingCharacters(in: .whitespacesAndNewlines)
+            let saved = UserDefaults.standard.stringArray(forKey: "agyAlwaysAllowedPrefixes") ?? []
+            if saved.contains(where: { !$0.isEmpty && (trimmed == $0 || trimmed.hasPrefix($0 + " ")) }) {
+                Task.detached { [weak self] in
+                    self?.sendLine(fd: fd, text: #"{"permissionDecision":"always"}"#)
+                    close(fd)
+                }
+                return
+            }
+        }
+
         // Determine which workspace pill owns the request.
         let pillId: String
         if isCodexRequest {
             pillId = "agent_codex"
+        } else if isAntigravityRequest {
+            pillId = "agent_antigravity"
         } else if isCopilotRequest {
             pillId = "agent_copilot"
         } else if isMuseRequest {
@@ -809,7 +1067,7 @@ final class HookServer: @unchecked Sendable {
         let terminalHost = isCursorEditor || isVSCodeEditor ? nil
             : ClaudeHost.terminal(termProgram: termProgram, bundleId: bundleId)
         let isTerminal = terminalHost != nil && ClaudeHost.terminalCardsEnabled
-        guard isCodexRequest || isCopilotRequest || isMuseRequest || isHermesRequest || isCursorEditor || isVSCodeEditor || isTerminal else {
+        guard isCodexRequest || isAntigravityRequest || isCopilotRequest || isMuseRequest || isHermesRequest || isCursorEditor || isVSCodeEditor || isTerminal else {
             Task.detached { [weak self] in
                 self?.sendLine(fd: fd, text: #"{"permissionDecision":"ask"}"#)
                 close(fd)
@@ -817,8 +1075,6 @@ final class HookServer: @unchecked Sendable {
             return
         }
 
-        let tool = payload["tool_name"] as? String ?? "Tool"
-        let toolInput = payload["tool_input"] as? [String: Any] ?? [:]
         let inputKey = Self.approvalInputKey(toolInput)
         nbLog("PermissionRequest \(tool) [\(pillId)]")
 
@@ -833,14 +1089,33 @@ final class HookServer: @unchecked Sendable {
             return
         }
 
-        let command = toolInput["command"] as? String ?? tool
+        let previewDiff = buildFileDiff(tool: tool, input: toolInput, pillId: pillId,
+                                        conversationId: sessionId, stepIndex: payload["stepIdx"] as? Int,
+                                        consumeSnapshot: false)
+        let command: String
+        if let cmd = (toolInput["command"] as? String) ?? (toolInput["CommandLine"] as? String), !cmd.isEmpty {
+            command = cmd
+        } else if let diff = previewDiff {
+            if let desc = (toolInput["Description"] as? String) ?? (toolInput["Instruction"] as? String),
+               !desc.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                command = "\(diff.name) (+\(diff.added) −\(diff.removed)) · \(oneLine(desc, limit: 70))"
+            } else {
+                command = "\(diff.name) (+\(diff.added) −\(diff.removed))"
+            }
+        } else if let path = (toolInput["file_path"] as? String) ?? (toolInput["TargetFile"] as? String) ?? (toolInput["path"] as? String),
+                  !path.isEmpty {
+            command = "\(tool) · \(URL(fileURLWithPath: path).lastPathComponent)"
+        } else {
+            command = tool
+        }
 
         // Several requests can wait at once (several sessions or agents): they queue, the
         // card shows the oldest. Past the cap, the newest goes back to its own terminal.
         let entry = QueuedApproval(id: UUID(), fd: fd, sessionId: sessionId, pillId: pillId,
                                    projectName: projectName, cwd: cwd, tool: tool,
                                    command: command, inputKey: inputKey,
-                                   hostApp: terminalHost?.bundleId, bundleId: bundleId)
+                                   hostApp: terminalHost?.bundleId, bundleId: bundleId,
+                                   diff: previewDiff)
         guard approvals.enqueue(entry) == .accepted else {
             nbLog("PermissionRequest \(tool): \(ApprovalQueue.maxPending) already waiting, asked in the terminal")
             Task.detached { [weak self] in
@@ -874,14 +1149,28 @@ final class HookServer: @unchecked Sendable {
 
         // Safety timeout — drop without a decision. nb-hook reads EOF from the cancel
         // handler's close and exits; the agent asks again itself.
-        // Copilot/Muse use 110s (their relay waits 118s but their hook timeout is 120s, leaving little margin).
-        let waitTimeout: Double = (isCopilotRequest || isMuseRequest) ? 110 : 115
+        // Copilot/Muse/Antigravity use 110s (their relay waits 118s but their hook timeout is 120s, leaving little margin).
+        let waitTimeout: Double = (isCopilotRequest || isMuseRequest || isAntigravityRequest) ? 110 : 115
         DispatchQueue.main.asyncAfter(deadline: .now() + waitTimeout) { [weak self] in
             guard let self, self.approvals.contains(id: entryId) else { return }
             self.removeApproval(id: entryId, note: self.waitingNote(pill: capturedPillId))
         }
 
         showApprovalHead()
+    }
+
+    private static func antigravityCommandRule(for command: String) -> String {
+        let trimmed = command.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return "" }
+        let complexChars = CharacterSet(charactersIn: "&;|`$><\n")
+        if trimmed.unicodeScalars.contains(where: { complexChars.contains($0) }) {
+            return trimmed
+        }
+        let parts = trimmed.split(whereSeparator: { $0.isWhitespace }).map(String.init)
+        if parts.count >= 2 && !parts[1].hasPrefix("-") && !parts[1].contains("/") && !parts[1].contains(".") {
+            return "\(parts[0]) \(parts[1])"
+        }
+        return parts.first ?? trimmed
     }
 
     /// Called by ApprovalView buttons and the iPhone. Writes the decision to the waiting
@@ -911,6 +1200,17 @@ final class HookServer: @unchecked Sendable {
         if let id, id != head.id {
             nbLog("Approval decision for a request no longer on the card, ignored")
             return
+        }
+
+        if decision == "always", head.pillId == "agent_antigravity", head.tool == "run_command" {
+            let rule = Self.antigravityCommandRule(for: head.command)
+            if !rule.isEmpty {
+                var saved = UserDefaults.standard.stringArray(forKey: "agyAlwaysAllowedPrefixes") ?? []
+                if !saved.contains(rule) {
+                    saved.append(rule)
+                    UserDefaults.standard.set(saved, forKey: "agyAlwaysAllowedPrefixes")
+                }
+            }
         }
 
         let json: String
@@ -1151,6 +1451,18 @@ final class HookServer: @unchecked Sendable {
             "apply_patch":  String(localized: "step.edits",     defaultValue: "Edits"),
             "update_plan":  String(localized: "step.tasks",     defaultValue: "Tasks"),
             "spawn_agent":  String(localized: "step.agent",     defaultValue: "Agent"),
+            // Antigravity tools
+            "run_command":                String(localized: "step.runs",       defaultValue: "Runs"),
+            "view_file":                  String(localized: "step.reads",      defaultValue: "Reads"),
+            "write_to_file":              String(localized: "step.writes",     defaultValue: "Writes"),
+            "replace_file_content":       String(localized: "step.edits",      defaultValue: "Edits"),
+            "multi_replace_file_content": String(localized: "step.edits",      defaultValue: "Edits"),
+            "grep_search":                String(localized: "step.searches",   defaultValue: "Searches"),
+            "find_by_name":               String(localized: "step.searches",   defaultValue: "Searches"),
+            "list_dir":                   String(localized: "step.lists",      defaultValue: "Lists"),
+            "search_web":                 String(localized: "step.web-search", defaultValue: "Searches the web"),
+            "read_url_content":           String(localized: "step.fetches",    defaultValue: "Fetches"),
+            "invoke_subagent":            String(localized: "step.agent",      defaultValue: "Agent"),
         ]
         var label = labels[tool] ?? tool
 
@@ -1161,8 +1473,9 @@ final class HookServer: @unchecked Sendable {
             label = parts.count >= 2 ? "\(parts[0]) · \(parts.dropFirst().joined(separator: "__"))" : rest
         }
 
-        // Bash: infer a more precise verb from the command
-        if tool == "Bash", let cmd = input["command"] as? String {
+        // Bash / run_command: infer a more precise verb from the command
+        if (tool == "Bash" || tool == "run_command"),
+           let cmd = (input["command"] as? String) ?? (input["CommandLine"] as? String) {
             return "\(bashVerb(cmd)) · \(oneLine(cmd))"
         }
 
@@ -1179,13 +1492,13 @@ final class HookServer: @unchecked Sendable {
             return label
         }
 
-        if let cmd = input["command"] as? String {
+        if let cmd = (input["command"] as? String) ?? (input["CommandLine"] as? String) {
             return "\(label) · \(oneLine(cmd))"
-        } else if let path = input["path"] as? String {
-            return "\(label) · \(URL(fileURLWithPath: path).lastPathComponent)"
-        } else if let file = input["file_path"] as? String {
+        } else if let file = (input["file_path"] as? String) ?? (input["TargetFile"] as? String) ?? (input["AbsolutePath"] as? String) {
             return "\(label) · \(URL(fileURLWithPath: file).lastPathComponent)"
-        } else if let query = input["query"] as? String {
+        } else if let path = (input["path"] as? String) ?? (input["SearchPath"] as? String) ?? (input["SearchDirectory"] as? String) ?? (input["DirectoryPath"] as? String) {
+            return "\(label) · \(URL(fileURLWithPath: path).lastPathComponent)"
+        } else if let query = (input["query"] as? String) ?? (input["Query"] as? String) ?? (input["Pattern"] as? String) ?? (input["pattern"] as? String) {
             return "\(label) · \(oneLine(query))"
         }
         return label
@@ -1209,35 +1522,76 @@ final class HookServer: @unchecked Sendable {
     // MARK: - Live diff helpers
 
     @MainActor
-    private func buildFileDiff(tool: String, input: [String: Any], pillId: String) -> FileDiff? {
+    private func buildFileDiff(
+        tool: String,
+        input: [String: Any],
+        pillId: String,
+        conversationId: String = "",
+        stepIndex: Int? = nil,
+        consumeSnapshot: Bool = true
+    ) -> FileDiff? {
         switch tool {
-        case "Edit":
-            guard let old = input["old_string"] as? String,
-                  let new = input["new_string"] as? String,
-                  let path = input["file_path"] as? String,
+        case "Edit", "replace_file_content":
+            guard let old = (input["old_string"] as? String) ?? (input["TargetContent"] as? String),
+                  let new = (input["new_string"] as? String) ?? (input["ReplacementContent"] as? String),
+                  let path = (input["file_path"] as? String) ?? (input["TargetFile"] as? String),
                   !old.isEmpty || !new.isEmpty else { return nil }
-            let d = DiffEngine.fromEdit(old: old, new: new, path: path)
+            var d = DiffEngine.fromEdit(old: old, new: new, path: path)
+            d.pillId = pillId
+            d.conversationId = conversationId
+            d.stepIndex = stepIndex
             return (d.added > 0 || d.removed > 0) ? d : nil
 
-        case "MultiEdit":
-            guard let path = input["file_path"] as? String,
-                  let edits = input["edits"] as? [[String: Any]], !edits.isEmpty else { return nil }
+        case "MultiEdit", "multi_replace_file_content":
+            guard let path = (input["file_path"] as? String) ?? (input["TargetFile"] as? String),
+                  let edits = (input["edits"] as? [[String: Any]]) ?? (input["ReplacementChunks"] as? [[String: Any]]),
+                  !edits.isEmpty else { return nil }
             var totalAdded = 0, totalRemoved = 0, allHunks: [DiffHunk] = [], anyLarge = false
+            var chunks: [FileEditChunk] = []
             for edit in edits {
-                guard let old = edit["old_string"] as? String,
-                      let new = edit["new_string"] as? String else { continue }
+                guard let old = (edit["old_string"] as? String) ?? (edit["TargetContent"] as? String),
+                      let new = (edit["new_string"] as? String) ?? (edit["ReplacementContent"] as? String) else { continue }
                 let d = DiffEngine.fromEdit(old: old, new: new, path: path)
                 totalAdded += d.added; totalRemoved += d.removed
                 allHunks.append(contentsOf: d.hunks); if d.tooLarge { anyLarge = true }
+                chunks.append(FileEditChunk(oldString: old, newString: new))
             }
             guard totalAdded > 0 || totalRemoved > 0 else { return nil }
-            return FileDiff(path: path, added: totalAdded, removed: totalRemoved,
-                            hunks: allHunks, tooLarge: anyLarge, isNewFile: false)
+            return FileDiff(
+                path: path,
+                added: totalAdded,
+                removed: totalRemoved,
+                hunks: allHunks,
+                tooLarge: anyLarge,
+                isNewFile: false,
+                editChunks: chunks,
+                pillId: pillId,
+                conversationId: conversationId,
+                stepIndex: stepIndex
+            )
 
-        case "Write":
-            guard let path = input["file_path"] as? String,
-                  let content = input["content"] as? String, !content.isEmpty else { return nil }
-            let d = DiffEngine.fromNew(content: content, path: path)
+        case "Write", "write_to_file":
+            guard let path = (input["file_path"] as? String) ?? (input["TargetFile"] as? String),
+                  let content = (input["content"] as? String) ?? (input["CodeContent"] as? String),
+                  !content.isEmpty else { return nil }
+            let existing: String?
+            if consumeSnapshot {
+                existing = preToolFileSnapshots.removeValue(forKey: path)
+            } else {
+                existing = preToolFileSnapshots[path] ?? (try? String(contentsOfFile: path, encoding: .utf8))
+            }
+            if let existing, !existing.isEmpty {
+                var d = DiffEngine.fromEdit(old: existing, new: content, path: path)
+                d.previousFileContent = existing
+                d.pillId = pillId
+                d.conversationId = conversationId
+                d.stepIndex = stepIndex
+                return (d.added > 0 || d.removed > 0) ? d : nil
+            }
+            var d = DiffEngine.fromNew(content: content, path: path)
+            d.pillId = pillId
+            d.conversationId = conversationId
+            d.stepIndex = stepIndex
             return (d.added > 0 || d.removed > 0) ? d : nil
 
         default:
@@ -1288,6 +1642,7 @@ final class HookServer: @unchecked Sendable {
         let pyURL = wrapperURL.deletingLastPathComponent().appendingPathComponent("nb-hook.py")
         try? nbHookPythonGitHub.write(to: pyURL, atomically: true, encoding: .utf8)
         _ = try? FileManager.default.setAttributes([.posixPermissions: 0o755 as NSNumber], ofItemAtPath: pyURL.path)
+        upgradeAgyHooksTimeoutIfNeeded()
         #endif
     }
 
@@ -1840,12 +2195,14 @@ final class HookServer: @unchecked Sendable {
                                                  label: "~/.gemini/config/hooks.json")
         let base = hookBase()
         // PreToolUse / PostToolUse: tool-level hooks — use matcher group
+        // PreToolUse uses 120s timeout so blocking approval requests in the notch have time for user input.
         // PreInvocation / PostInvocation / Stop: lifecycle hooks — direct handler, no matcher
         var coucou: [String: Any] = [:]
         for event in ["PreToolUse", "PostToolUse"] {
+            let timeout = (event == "PreToolUse") ? 120 : 10
             let hook: [String: Any] = ["type": "command",
                                        "command": "\(base) --agent antigravity \(event)",
-                                       "timeout": 10]
+                                       "timeout": timeout]
             coucou[event] = [["matcher": "*", "hooks": [hook]]]
         }
         for event in ["PreInvocation", "PostInvocation", "Stop"] {
@@ -1857,6 +2214,28 @@ final class HookServer: @unchecked Sendable {
         root["coucou"] = coucou
         return try JSONSerialization.data(withJSONObject: root,
                                          options: [.prettyPrinted, .sortedKeys, .withoutEscapingSlashes])
+    }
+
+    /// Automatically upgrades an existing ~/.gemini/config/hooks.json entry if PreToolUse still has timeout < 120s.
+    private func upgradeAgyHooksTimeoutIfNeeded() {
+        guard Self.agyHooksInstalled(),
+              let data = try? Data(contentsOf: Self.agyHooksURL),
+              let root = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any],
+              let coucou = root["coucou"] as? [String: Any],
+              let preGroups = coucou["PreToolUse"] as? [[String: Any]] else { return }
+        var needsUpgrade = false
+        for group in preGroups {
+            if let hooks = group["hooks"] as? [[String: Any]] {
+                for hook in hooks {
+                    if let cmd = hook["command"] as? String, cmd.contains("nb-hook"),
+                       let timeout = hook["timeout"] as? Int, timeout < 120 {
+                        needsUpgrade = true
+                    }
+                }
+            }
+        }
+        guard needsUpgrade, let upgraded = try? buildAgyHooksData() else { return }
+        try? upgraded.write(to: Self.agyHooksURL, options: .atomic)
     }
 
     private func withoutAgyHooks() throws -> Data {
@@ -3191,7 +3570,7 @@ def normalize_event(name):
         'AfterTool': 'PostToolUse', 'AfterModel': 'PostToolUse',
         'BeforeAgent': 'UserPromptSubmit', 'AfterAgent': 'Stop',
         'startup': 'SessionStart', 'exit': 'SessionEnd',
-        'PreInvocation': 'UserPromptSubmit', 'PostInvocation': 'PostToolUse',
+        'PreInvocation': 'UserPromptSubmit', 'PostInvocation': 'Stop',
         'pre_tool_use': 'PreToolUse', 'post_tool_use': 'PostToolUse',
         'user_prompt_submit': 'UserPromptSubmit', 'session_start': 'SessionStart',
         'session_end': 'SessionEnd', 'stop': 'Stop',
@@ -3199,8 +3578,42 @@ def normalize_event(name):
         'agentStop': 'Stop', 'notification': 'Notification',
         'preToolUse': 'PreToolUse', 'postToolUse': 'PostToolUse',
         'permissionRequest': 'PermissionRequest', 'sessionEnd': 'SessionEnd',
+        'Interrupt': 'Interrupt', 'interrupt': 'Interrupt',
+        'Abort': 'Interrupt', 'abort': 'Interrupt',
+        'Cancel': 'Interrupt', 'cancel': 'Interrupt',
     }
     return mapping.get(name, name)
+
+def is_outside_workspace(target_path, payload):
+    if not target_path or not isinstance(target_path, str):
+        return False
+    try:
+        real_target = os.path.realpath(os.path.expanduser(target_path))
+    except Exception:
+        real_target = target_path
+    roots = list(payload.get('workspacePaths') or payload.get('workspace_roots') or [])
+    if payload.get('cwd'):
+        roots.append(payload['cwd'])
+    if payload.get('artifactDirectoryPath'):
+        roots.append(payload['artifactDirectoryPath'])
+    roots.extend([
+        os.path.expanduser('~/.gemini/antigravity/brain'),
+        os.path.expanduser('~/.gemini/antigravity/builtin'),
+        '/tmp',
+        '/private/tmp',
+    ])
+    has_workspace = False
+    for r in roots:
+        if not r or not isinstance(r, str):
+            continue
+        has_workspace = True
+        try:
+            real_r = os.path.realpath(os.path.expanduser(r))
+        except Exception:
+            real_r = r
+        if real_target == real_r or real_target.startswith(real_r.rstrip('/') + '/'):
+            return False
+    return has_workspace
 
 def normalize_tool_fields(payload):
     if 'tool_name' not in payload:
@@ -3224,9 +3637,18 @@ def normalize_tool_fields(payload):
             if isinstance(tool.get('args'), dict):
                 flat = dict(tool['args'])
                 for src, dst in [('CommandLine', 'command'), ('FilePath', 'file_path'),
+                                 ('TargetFile', 'file_path'), ('AbsolutePath', 'file_path'),
+                                 ('TargetContent', 'old_string'), ('ReplacementContent', 'new_string'),
+                                 ('CodeContent', 'content'),
+                                 ('SearchPath', 'path'), ('SearchDirectory', 'path'), ('DirectoryPath', 'path'),
                                  ('Path', 'path'), ('Url', 'url'), ('Query', 'query'), ('Pattern', 'pattern')]:
-                    if src in flat:
+                    if src in flat and dst not in flat:
                         flat[dst] = flat[src]
+                if isinstance(flat.get('ReplacementChunks'), list) and 'edits' not in flat:
+                    flat['edits'] = [
+                        {'old_string': c.get('TargetContent', ''), 'new_string': c.get('ReplacementContent', '')}
+                        for c in flat['ReplacementChunks'] if isinstance(c, dict)
+                    ]
                 payload['tool_input'] = flat
     if 'session_id' not in payload:
         for k in ['conversationId', 'conversation_id', 'sessionId', 'GEMINI_SESSION_ID']:
@@ -3240,6 +3662,11 @@ def normalize_tool_fields(payload):
     # Copilot sends workdir for the current working directory
     if not payload.get('cwd') and payload.get('workdir'):
         payload['cwd'] = payload['workdir']
+    t_in = payload.get('tool_input')
+    if isinstance(t_in, dict):
+        target = t_in.get('file_path') or t_in.get('path') or ''
+        if target:
+            payload['coucou_outside_workspace'] = is_outside_workspace(target, payload)
 
 def main():
     raw = b''
@@ -3468,9 +3895,58 @@ def main():
     except Exception:
         pass  # Always exit cleanly — never block the agent
 
-    # Antigravity needs a decision on PreToolUse ({} reads as a denial). "ask" keeps its own
-    # permission prompt (and the user's Always Allow); Coucou never allows a tool by itself.
+    # Antigravity needs a decision on PreToolUse ({} reads as a denial).
+    # Match Antigravity's native permission rules:
+    # - Sandboxed commands (BypassSandbox == False) auto-run without asking ("ask" -> no prompt).
+    # - Unsandboxed commands (BypassSandbox == True) and non-workspace file operations ask in the notch.
     if agent == 'antigravity' and event == 'PreToolUse':
+        agy_tool = payload.get('tool_name', '')
+        t_in = payload.get('tool_input') or {}
+        outside_ws = bool(payload.get('coucou_outside_workspace', False))
+        bypass_sb = bool(t_in.get('BypassSandbox', False))
+        should_ask = (
+            (agy_tool == 'run_command' and bypass_sb)
+            or (agy_tool in ('replace_file_content', 'multi_replace_file_content', 'write_to_file'))
+            or (agy_tool in ('view_file', 'list_dir', 'grep_search', 'find_by_name') and outside_ws)
+        )
+        if should_ask:
+            perm_payload = dict(payload)
+            perm_payload['hook_event_name'] = 'PermissionRequest'
+            try:
+                s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+                s.settimeout(115)
+                s.connect(socket_path)
+                s.sendall((json.dumps(perm_payload) + '\\n').encode())
+                chunks = []
+                while True:
+                    chunk = s.recv(4096)
+                    if not chunk:
+                        break
+                    chunks.append(chunk)
+                    if b'\\n' in chunk:
+                        break
+                s.close()
+                response = b''.join(chunks).decode().strip()
+                if response:
+                    resp_obj = json.loads(response)
+                    decision = resp_obj.get('permissionDecision', '')
+                    if decision in ('allow', 'always'):
+                        cmd = t_in.get('command', '')
+                        if agy_tool == 'run_command' and cmd:
+                            out = {'decision': 'allow', 'permissionOverrides': [f'command({cmd})']}
+                        elif agy_tool in ('view_file', 'list_dir', 'grep_search', 'find_by_name', 'replace_file_content', 'multi_replace_file_content', 'write_to_file'):
+                            out = {'decision': 'allow', 'permissionOverrides': ['file(*)']}
+                        else:
+                            out = {'decision': 'allow'}
+                        sys.stdout.write(json.dumps(out) + '\\n')
+                        sys.stdout.flush()
+                        sys.exit(0)
+                    elif decision == 'deny':
+                        sys.stdout.write(json.dumps({'decision': 'deny', 'reason': 'Denied from Coucou'}) + '\\n')
+                        sys.stdout.flush()
+                        sys.exit(0)
+            except Exception:
+                pass
         sys.stdout.write('{"decision":"ask"}\\n')
         sys.stdout.flush()
     elif agent in ('gemini', 'antigravity', 'muse', 'copilot'):
@@ -3498,7 +3974,7 @@ def normalize_event(name):
         'AfterTool': 'PostToolUse', 'AfterModel': 'PostToolUse',
         'BeforeAgent': 'UserPromptSubmit', 'AfterAgent': 'Stop',
         'startup': 'SessionStart', 'exit': 'SessionEnd',
-        'PreInvocation': 'UserPromptSubmit', 'PostInvocation': 'PostToolUse',
+        'PreInvocation': 'UserPromptSubmit', 'PostInvocation': 'Stop',
         'pre_tool_use': 'PreToolUse', 'post_tool_use': 'PostToolUse',
         'user_prompt_submit': 'UserPromptSubmit', 'session_start': 'SessionStart',
         'session_end': 'SessionEnd', 'stop': 'Stop',
@@ -3506,8 +3982,42 @@ def normalize_event(name):
         'agentStop': 'Stop', 'notification': 'Notification',
         'preToolUse': 'PreToolUse', 'postToolUse': 'PostToolUse',
         'permissionRequest': 'PermissionRequest', 'sessionEnd': 'SessionEnd',
+        'Interrupt': 'Interrupt', 'interrupt': 'Interrupt',
+        'Abort': 'Interrupt', 'abort': 'Interrupt',
+        'Cancel': 'Interrupt', 'cancel': 'Interrupt',
     }
     return mapping.get(name, name)
+
+def is_outside_workspace(target_path, payload):
+    if not target_path or not isinstance(target_path, str):
+        return False
+    try:
+        real_target = os.path.realpath(os.path.expanduser(target_path))
+    except Exception:
+        real_target = target_path
+    roots = list(payload.get('workspacePaths') or payload.get('workspace_roots') or [])
+    if payload.get('cwd'):
+        roots.append(payload['cwd'])
+    if payload.get('artifactDirectoryPath'):
+        roots.append(payload['artifactDirectoryPath'])
+    roots.extend([
+        os.path.expanduser('~/.gemini/antigravity/brain'),
+        os.path.expanduser('~/.gemini/antigravity/builtin'),
+        '/tmp',
+        '/private/tmp',
+    ])
+    has_workspace = False
+    for r in roots:
+        if not r or not isinstance(r, str):
+            continue
+        has_workspace = True
+        try:
+            real_r = os.path.realpath(os.path.expanduser(r))
+        except Exception:
+            real_r = r
+        if real_target == real_r or real_target.startswith(real_r.rstrip('/') + '/'):
+            return False
+    return has_workspace
 
 def normalize_tool_fields(payload):
     if 'tool_name' not in payload:
@@ -3531,9 +4041,18 @@ def normalize_tool_fields(payload):
             if isinstance(tool.get('args'), dict):
                 flat = dict(tool['args'])
                 for src, dst in [('CommandLine', 'command'), ('FilePath', 'file_path'),
+                                 ('TargetFile', 'file_path'), ('AbsolutePath', 'file_path'),
+                                 ('TargetContent', 'old_string'), ('ReplacementContent', 'new_string'),
+                                 ('CodeContent', 'content'),
+                                 ('SearchPath', 'path'), ('SearchDirectory', 'path'), ('DirectoryPath', 'path'),
                                  ('Path', 'path'), ('Url', 'url'), ('Query', 'query'), ('Pattern', 'pattern')]:
-                    if src in flat:
+                    if src in flat and dst not in flat:
                         flat[dst] = flat[src]
+                if isinstance(flat.get('ReplacementChunks'), list) and 'edits' not in flat:
+                    flat['edits'] = [
+                        {'old_string': c.get('TargetContent', ''), 'new_string': c.get('ReplacementContent', '')}
+                        for c in flat['ReplacementChunks'] if isinstance(c, dict)
+                    ]
                 payload['tool_input'] = flat
     if 'session_id' not in payload:
         for k in ['conversationId', 'conversation_id', 'sessionId', 'GEMINI_SESSION_ID']:
@@ -3547,6 +4066,11 @@ def normalize_tool_fields(payload):
     # Copilot sends workdir for the current working directory
     if not payload.get('cwd') and payload.get('workdir'):
         payload['cwd'] = payload['workdir']
+    t_in = payload.get('tool_input')
+    if isinstance(t_in, dict):
+        target = t_in.get('file_path') or t_in.get('path') or ''
+        if target:
+            payload['coucou_outside_workspace'] = is_outside_workspace(target, payload)
 
 def main():
     raw = b''
@@ -3773,9 +4297,58 @@ def main():
     except Exception:
         pass  # Always exit cleanly — never block the agent
 
-    # Antigravity needs a decision on PreToolUse ({} reads as a denial). "ask" keeps its own
-    # permission prompt (and the user's Always Allow); Coucou never allows a tool by itself.
+    # Antigravity needs a decision on PreToolUse ({} reads as a denial).
+    # Match Antigravity's native permission rules:
+    # - Sandboxed commands (BypassSandbox == False) auto-run without asking ("ask" -> no prompt).
+    # - Unsandboxed commands (BypassSandbox == True) and non-workspace file operations ask in the notch.
     if agent == 'antigravity' and event == 'PreToolUse':
+        agy_tool = payload.get('tool_name', '')
+        t_in = payload.get('tool_input') or {}
+        outside_ws = bool(payload.get('coucou_outside_workspace', False))
+        bypass_sb = bool(t_in.get('BypassSandbox', False))
+        should_ask = (
+            (agy_tool == 'run_command' and bypass_sb)
+            or (agy_tool in ('replace_file_content', 'multi_replace_file_content', 'write_to_file'))
+            or (agy_tool in ('view_file', 'list_dir', 'grep_search', 'find_by_name') and outside_ws)
+        )
+        if should_ask:
+            perm_payload = dict(payload)
+            perm_payload['hook_event_name'] = 'PermissionRequest'
+            try:
+                s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+                s.settimeout(115)
+                s.connect(socket_path)
+                s.sendall((json.dumps(perm_payload) + '\\n').encode())
+                chunks = []
+                while True:
+                    chunk = s.recv(4096)
+                    if not chunk:
+                        break
+                    chunks.append(chunk)
+                    if b'\\n' in chunk:
+                        break
+                s.close()
+                response = b''.join(chunks).decode().strip()
+                if response:
+                    resp_obj = json.loads(response)
+                    decision = resp_obj.get('permissionDecision', '')
+                    if decision in ('allow', 'always'):
+                        cmd = t_in.get('command', '')
+                        if agy_tool == 'run_command' and cmd:
+                            out = {'decision': 'allow', 'permissionOverrides': [f'command({cmd})']}
+                        elif agy_tool in ('view_file', 'list_dir', 'grep_search', 'find_by_name', 'replace_file_content', 'multi_replace_file_content', 'write_to_file'):
+                            out = {'decision': 'allow', 'permissionOverrides': ['file(*)']}
+                        else:
+                            out = {'decision': 'allow'}
+                        sys.stdout.write(json.dumps(out) + '\\n')
+                        sys.stdout.flush()
+                        sys.exit(0)
+                    elif decision == 'deny':
+                        sys.stdout.write(json.dumps({'decision': 'deny', 'reason': 'Denied from Coucou'}) + '\\n')
+                        sys.stdout.flush()
+                        sys.exit(0)
+            except Exception:
+                pass
         sys.stdout.write('{"decision":"ask"}\\n')
         sys.stdout.flush()
     elif agent in ('gemini', 'antigravity', 'muse', 'copilot'):

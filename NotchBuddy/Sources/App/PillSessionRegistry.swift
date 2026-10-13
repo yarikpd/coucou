@@ -98,8 +98,18 @@ struct PillSessionRegistry {
     mutating func endTurn(pill: String, session: String, now: Date = Date()) -> TerminalScope {
         var p = pills[pill] ?? Pill()
         sweep(&p, now: now)
-        p.sessions[session]?.isWorking = false
-        p.sessions[session]?.lastSeen = now
+        if p.sessions[session] != nil {
+            p.sessions[session]?.isWorking = false
+            p.sessions[session]?.lastSeen = now
+        } else if p.order.count == 1, let onlyId = p.order.first {
+            p.sessions[onlyId]?.isWorking = false
+            p.sessions[onlyId]?.lastSeen = now
+        } else if session.isEmpty || session == "unknown" {
+            for k in p.sessions.keys {
+                p.sessions[k]?.isWorking = false
+                p.sessions[k]?.lastSeen = now
+            }
+        }
         if p.order.isEmpty { pills.removeValue(forKey: pill) } else { pills[pill] = p }
         return p.sessions.values.contains(where: \.isWorking) ? .sessionOnly : .pill
     }
@@ -109,14 +119,24 @@ struct PillSessionRegistry {
     mutating func endSession(pill: String, session: String, now: Date = Date()) -> TerminalScope {
         var p = pills[pill] ?? Pill()
         sweep(&p, now: now)
-        p.order.removeAll { $0 == session }
-        p.sessions.removeValue(forKey: session)
+        if !session.isEmpty && session != "unknown" {
+            p.order.removeAll { $0 == session }
+            p.sessions.removeValue(forKey: session)
+        } else {
+            p.order.removeAll()
+            p.sessions.removeAll()
+        }
         guard !p.order.isEmpty else {
             pills.removeValue(forKey: pill)
             return .pill
         }
         pills[pill] = p
         return .sessionOnly
+    }
+
+    /// Drops all sessions tracked behind `pill` immediately.
+    mutating func clear(pill: String) {
+        pills.removeValue(forKey: pill)
     }
 
     // MARK: - Reading

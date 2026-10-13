@@ -177,6 +177,16 @@ struct IslandContainer: View {
             }
         }
         #endif
+        .onChange(of: state.showingApprovalDiff) { _, _ in
+            guard state.mode == .expanded else { return }
+            let (w, h) = islandSize(mode: .expanded, view: state.view,
+                                    progress: state.uploadProgress,
+                                    nw: state.notchWidth, nh: state.notchHeight)
+            withAnimation(openSpring) {
+                islandWidth  = w
+                islandHeight = state.view == .prompt ? chatPromptHeight : h
+            }
+        }
         .onAppear {
             let (w, h) = islandSize(mode: state.mode, view: state.view,
                                     progress: state.uploadProgress,
@@ -513,7 +523,7 @@ struct IslandContentView: View {
                         // but stop their endless animations: nobody sees them.
                         .environment(\.islandViewActive, active)
                         .frame(maxWidth: .infinity)
-                        .frame(height: isTall ? nil : 98 + (v == .overview ? state.planDetailExtraHeight : 0))
+                        .frame(height: isTall ? nil : 98 + (v == .overview ? state.planDetailExtraHeight : 0) + (v == .approval ? state.approvalExtraHeight : 0))
                         .frame(minHeight: (isTall && !active) ? 0 : nil, maxHeight: isTall ? .infinity : nil)
                         .opacity(active ? 1 : 0)
                         .scaleEffect(active ? 1 : 0.97)

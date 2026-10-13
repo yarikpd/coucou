@@ -10,7 +10,7 @@ struct QueuedApproval: Equatable, Sendable {
     /// Client socket, held open until the user decides. Closed by the owner's dispatch source.
     let fd: Int32
     let sessionId: String
-    /// "integration_claude", "agent_cursor" or "agent_codex".
+    /// "integration_claude", "agent_cursor", "agent_codex", or "agent_antigravity".
     let pillId: String
     let projectName: String
     let cwd: String
@@ -21,6 +21,8 @@ struct QueuedApproval: Equatable, Sendable {
     /// Host app / bundle id of the session, so the card's pill keeps showing where it runs.
     var hostApp: String? = nil
     var bundleId: String = ""
+    /// Optional diff preview for file edit / write tools.
+    var diff: FileDiff? = nil
 }
 
 struct ApprovalQueue: Sendable {

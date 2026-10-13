@@ -90,6 +90,12 @@ struct OverviewView: View {
                                     .lineLimit(1)
                                     .truncationMode(.tail)
                                 Spacer(minLength: 2)
+                                if let diffs = state.sessionDiffs[agent.id], !diffs.isEmpty {
+                                    SessionDiffHeaderBadge(diffs: diffs) {
+                                        let target = diffs.last(where: { $0.decisionState == .pending && $0.canRevert }) ?? diffs.last!
+                                        withAnimation(.easeIn(duration: 0.16)) { activeDiffId = target.id }
+                                    }
+                                }
                                 if agent.steps.count > 1 {
                                     Text("\(min(agent.stepIndex + 1, agent.steps.count))/\(agent.steps.count)")
                                         .font(.system(size: 11))
@@ -145,10 +151,19 @@ struct OverviewView: View {
                 // Diff overlay — replaces ticker when a diff step is tapped
                 if let diffId = activeDiffId,
                    let task = agent,
-                   let diff = state.sessionDiffs[task.id]?.first(where: { $0.id == diffId }) {
+                   let allDiffs = state.sessionDiffs[task.id],
+                   let diff = allDiffs.first(where: { $0.id == diffId }) ?? allDiffs.last {
                     CardBackground(wash: nil)
-                    DiffCardView(diff: diff, onDismiss: { activeDiffId = nil })
-                        .transition(.opacity)
+                    DiffCardView(
+                        diff: diff,
+                        pillId: task.id,
+                        allDiffs: allDiffs,
+                        onSelectDiff: { newId in
+                            withAnimation(.easeIn(duration: 0.12)) { activeDiffId = newId }
+                        },
+                        onDismiss: { activeDiffId = nil }
+                    )
+                    .transition(.opacity)
                 }
 
                 // ↗ jump button — last in ZStack so it renders on top; hidden while any detail is open
@@ -206,8 +221,9 @@ struct OverviewView: View {
                 withAnimation(.easeIn(duration: 0.16)) { activeDiffId = nil }
                 _ = id
             } else if let task = state.focusTask,
-                      let last = state.sessionDiffs[task.id]?.last {
-                withAnimation(.easeIn(duration: 0.16)) { activeDiffId = last.id }
+                      let diffs = state.sessionDiffs[task.id],
+                      let target = diffs.last(where: { $0.decisionState == .pending && $0.canRevert }) ?? diffs.last {
+                withAnimation(.easeIn(duration: 0.16)) { activeDiffId = target.id }
             }
         }
     }
@@ -263,9 +279,11 @@ struct OverviewView: View {
                 NSWorkspace.shared.openApplication(at: url, configuration: .init(), completionHandler: nil)
             }
             #endif
+        case "agent_antigravity":
+            openAntigravityApp(cwd: task.sessionCwd)
         case "agent_claude-desktop":
             openClaudeDesktopApp()
-        case "agent_gemini", "agent_antigravity",
+        case "agent_gemini",
              "agent_copilot", "agent_muse", "agent_opencode", "agent_amp":
             #if !APPSTORE
             TerminalTarget.activate(sessionBundleId: nil)
@@ -360,8 +378,54 @@ struct ApprovalView: View {
                             .foregroundColor(Color(hex: "#8E939C"))
                             .monospacedDigit()
                     }
+                    Spacer(minLength: 4)
+                    if let diff = approval?.diff, !diff.hunks.isEmpty {
+                        Button(action: {
+                            withAnimation(.spring(response: 0.28, dampingFraction: 0.82)) {
+                                state.showingApprovalDiff.toggle()
+                            }
+                        }) {
+                            HStack(spacing: 3) {
+                                if diff.added > 0 {
+                                    Text("+\(diff.added)")
+                                        .font(.system(size: 10, weight: .semibold).monospaced())
+                                        .foregroundColor(Color(hex: "#22C55E"))
+                                }
+                                if diff.removed > 0 {
+                                    Text("−\(diff.removed)")
+                                        .font(.system(size: 10, weight: .semibold).monospaced())
+                                        .foregroundColor(Color(hex: "#F4505E"))
+                                }
+                                Image(systemName: state.showingApprovalDiff ? "chevron.up" : "chevron.down")
+                                    .font(.system(size: 7.5, weight: .bold))
+                                    .foregroundColor(Color(hex: "#C5C8CD"))
+                            }
+                            .padding(.horizontal, 7)
+                            .padding(.vertical, 2.5)
+                            .background(Color.white.opacity(state.showingApprovalDiff ? 0.14 : 0.08))
+                            .clipShape(Capsule())
+                            .overlay(Capsule().stroke(Color.white.opacity(0.12), lineWidth: 1))
+                        }
+                        .buttonStyle(.plain)
+                    }
                 }
                 CodeBlock(text: approval?.command ?? approval?.tool ?? "…")
+                if state.showingApprovalDiff, let diff = approval?.diff {
+                    let lines = diff.hunks.flatMap { $0.lines }
+                    ScrollView(.vertical, showsIndicators: false) {
+                        VStack(alignment: .leading, spacing: 0) {
+                            ForEach(Array(lines.enumerated()), id: \.offset) { _, line in
+                                DiffLineRowView(line: line)
+                            }
+                        }
+                        .padding(.vertical, 3)
+                        .padding(.horizontal, 4)
+                    }
+                    .frame(height: 76)
+                    .background(Color.black.opacity(0.38))
+                    .clipShape(RoundedRectangle(cornerRadius: 8))
+                    .overlay(RoundedRectangle(cornerRadius: 8).stroke(Color.white.opacity(0.07), lineWidth: 1))
+                }
                 HStack(spacing: 8) {
                     SecondaryButton("Deny") {
                         HookServer.shared.sendApprovalDecision("deny", for: shownId)
@@ -369,10 +433,14 @@ struct ApprovalView: View {
                     PrimaryButton("Allow") {
                         HookServer.shared.sendApprovalDecision("allow", for: shownId)
                     }
-                    // Codex, Copilot CLI and Muse Code do not support updatedPermissions
+                    // Codex, Copilot CLI and Muse Code do not support updatedPermissions;
+                    // Antigravity supports permissionOverrides: ["command(...)"] for run_command.
+                    let isAgyFileEdit = approval?.pillId == "agent_antigravity"
+                        && approval?.tool != "run_command"
                     let hideAlways = approval?.pillId == "agent_codex"
                         || approval?.pillId == "agent_copilot"
                         || approval?.pillId == "agent_muse"
+                        || isAgyFileEdit
                     if !hideAlways {
                         SecondaryButton("Always") {
                             HookServer.shared.sendApprovalDecision("always", for: shownId)
@@ -647,16 +715,55 @@ private func openClaudeDesktopApp() {
     }
 }
 
+/// Brings Google Antigravity forward (or opens `cwd` in it).
+private func openAntigravityApp(cwd: String? = nil) {
+    let ids = ["com.google.antigravity", "com.google.Antigravity"]
+    let appURL = ids.compactMap { NSWorkspace.shared.urlForApplication(withBundleIdentifier: $0) }.first
+        ?? (FileManager.default.fileExists(atPath: "/Applications/Antigravity.app")
+            ? URL(fileURLWithPath: "/Applications/Antigravity.app")
+            : nil)
+
+    if let running = NSWorkspace.shared.runningApplications.first(where: {
+        if let bid = $0.bundleIdentifier, ids.contains(bid) { return true }
+        return $0.localizedName == "Antigravity"
+    }) {
+        running.activate(options: .activateIgnoringOtherApps)
+        return
+    }
+
+    if let cwd, !cwd.isEmpty, let appURL {
+        NSWorkspace.shared.open(
+            [URL(fileURLWithPath: cwd)],
+            withApplicationAt: appURL,
+            configuration: .init(),
+            completionHandler: nil
+        )
+        return
+    }
+    if let appURL {
+        NSWorkspace.shared.openApplication(at: appURL, configuration: .init(), completionHandler: nil)
+    }
+}
+
 // MARK: - Finished
 
 struct FinishedView: View {
     @ObservedObject var state: AppState
 
+    private var finishedLabel: String {
+        guard let id = state.focusTask?.id else { return "Claude Code finished" }
+        if id == "agent_antigravity" { return "Antigravity finished" }
+        if let sub = PillCatalog.definition(for: id)?.sessionSubtitle {
+            return "\(sub) finished"
+        }
+        return "Claude Code finished"
+    }
+
     var body: some View {
         ZStack {
             CardBackground(wash: .green)
             VStack(alignment: .leading, spacing: 5) {
-                AgentWho(task: state.focusTask, label: "Claude Code finished")
+                AgentWho(task: state.focusTask, label: finishedLabel)
                 Text({
                     if let fl = state.focusTask?.finalLine { return fl }
                     if let s = state.focusTask?.steps.last(where: { !$0.isDiffStep }) { return s }
@@ -672,6 +779,11 @@ struct FinishedView: View {
                             openClaudeDesktopApp()
                             NotificationCenter.default.post(name: .islandCollapse, object: nil)
                         }
+                    } else if state.focusTask?.id == "agent_antigravity" {
+                        PrimaryButton("Open Antigravity") {
+                            openAntigravityApp(cwd: state.focusTask?.sessionCwd)
+                            NotificationCenter.default.post(name: .islandCollapse, object: nil)
+                        }
                     } else {
                         #if !APPSTORE
                         PrimaryButton("Open terminal") {
@@ -684,6 +796,20 @@ struct FinishedView: View {
                             NotificationCenter.default.post(name: .islandCollapse, object: nil)
                         }
                         #endif
+                    }
+                    if let task = state.focusTask,
+                       let diffs = state.sessionDiffs[task.id],
+                       !diffs.isEmpty {
+                        let added = diffs.reduce(0) { $0 + $1.added }
+                        let removed = diffs.reduce(0) { $0 + $1.removed }
+                        SecondaryButton(verbatim: "Diffs (+\(added) −\(removed))") {
+                            withAnimation(.spring(response: 0.28, dampingFraction: 0.82)) {
+                                state.view = .overview
+                            }
+                            DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) {
+                                NotificationCenter.default.post(name: .islandToggleDiff, object: nil)
+                            }
+                        }
                     }
                     SecondaryButton("OK") {
                         NotificationCenter.default.post(name: .islandCollapse, object: nil)
@@ -698,40 +824,209 @@ struct FinishedView: View {
     }
 }
 
+// MARK: - Session Diff Header Badge
+
+struct SessionDiffHeaderBadge: View {
+    let diffs: [FileDiff]
+    let onTap: () -> Void
+    @State private var isHovered = false
+
+    private var totalAdded: Int { diffs.reduce(0) { $0 + $1.added } }
+    private var totalRemoved: Int { diffs.reduce(0) { $0 + $1.removed } }
+    private var hasPending: Bool { diffs.contains { $0.decisionState == .pending && $0.canRevert } }
+
+    var body: some View {
+        Button(action: onTap) {
+            HStack(spacing: 3) {
+                if totalAdded > 0 {
+                    Text("+\(totalAdded)")
+                        .font(.system(size: 9.5, weight: .semibold).monospaced())
+                        .foregroundColor(Color(hex: "#22C55E"))
+                }
+                if totalRemoved > 0 {
+                    Text("−\(totalRemoved)")
+                        .font(.system(size: 9.5, weight: .semibold).monospaced())
+                        .foregroundColor(Color(hex: "#F4505E"))
+                }
+                if totalAdded == 0 && totalRemoved == 0 {
+                    Text("Diff")
+                        .font(.system(size: 9.5, weight: .semibold))
+                        .foregroundColor(Color(hex: "#C5C8CD"))
+                }
+                if diffs.count > 1 {
+                    Text("(\(diffs.count))")
+                        .font(.system(size: 9, weight: .medium).monospacedDigit())
+                        .foregroundColor(Color(hex: "#8E939C"))
+                }
+            }
+            .padding(.horizontal, 6)
+            .padding(.vertical, 1.5)
+            .background(Color.white.opacity(isHovered ? 0.14 : (hasPending ? 0.09 : 0.05)))
+            .clipShape(Capsule())
+            .overlay(
+                Capsule()
+                    .stroke(hasPending ? Color(hex: "#22C55E").opacity(0.35) : Color.white.opacity(0.1), lineWidth: 1)
+            )
+        }
+        .buttonStyle(.plain)
+        .onHover { isHovered = $0 }
+        .fixedSize()
+    }
+}
+
 // MARK: - Diff Card
 
 struct DiffCardView: View {
     let diff: FileDiff
+    var pillId: String = ""
+    var allDiffs: [FileDiff] = []
+    var onSelectDiff: ((Int) -> Void)? = nil
     let onDismiss: () -> Void
 
     private var allLines: [DiffLine] { diff.hunks.flatMap { $0.lines } }
+    private var currentPosition: Int? { allDiffs.firstIndex(where: { $0.id == diff.id }) }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
             // Header
-            HStack(spacing: 6) {
+            HStack(spacing: 5) {
                 Button(action: onDismiss) {
                     HStack(spacing: 3) {
                         Image(systemName: "chevron.left")
                             .font(.system(size: 8, weight: .medium))
                         Text(diff.name)
-                            .font(.system(size: 12, weight: .semibold))
+                            .font(.system(size: 11.5, weight: .semibold))
                             .lineLimit(1)
+                            .truncationMode(.middle)
                     }
                     .foregroundColor(Color(hex: "#F5F6F8"))
                 }
                 .buttonStyle(.plain)
+                .layoutPriority(1)
+
+                if allDiffs.count > 1, let pos = currentPosition {
+                    HStack(spacing: 2) {
+                        Button(action: {
+                            let prev = (pos - 1 + allDiffs.count) % allDiffs.count
+                            onSelectDiff?(allDiffs[prev].id)
+                        }) {
+                            Image(systemName: "chevron.left")
+                                .font(.system(size: 7.5, weight: .bold))
+                                .foregroundColor(Color(hex: "#8E939C"))
+                                .frame(width: 12, height: 14)
+                        }
+                        .buttonStyle(.plain)
+                        Text("\(pos + 1)/\(allDiffs.count)")
+                            .font(.system(size: 9.5, weight: .medium).monospacedDigit())
+                            .foregroundColor(Color(hex: "#8E939C"))
+                            .fixedSize()
+                        Button(action: {
+                            let next = (pos + 1) % allDiffs.count
+                            onSelectDiff?(allDiffs[next].id)
+                        }) {
+                            Image(systemName: "chevron.right")
+                                .font(.system(size: 7.5, weight: .bold))
+                                .foregroundColor(Color(hex: "#8E939C"))
+                                .frame(width: 12, height: 14)
+                        }
+                        .buttonStyle(.plain)
+                    }
+                    .padding(.horizontal, 3)
+                    .background(Color.white.opacity(0.05))
+                    .clipShape(Capsule())
+                }
+
                 Spacer(minLength: 2)
                 if diff.added > 0 {
                     Text("+\(diff.added)")
-                        .font(.system(size: 10, weight: .medium).monospaced())
+                        .font(.system(size: 9.5, weight: .medium).monospaced())
                         .foregroundColor(Color(hex: "#22C55E"))
+                        .fixedSize()
                 }
                 if diff.removed > 0 {
                     Text("−\(diff.removed)")
-                        .font(.system(size: 10, weight: .medium).monospaced())
+                        .font(.system(size: 9.5, weight: .medium).monospaced())
                         .foregroundColor(Color(hex: "#F4505E"))
+                        .fixedSize()
                 }
+
+                // Accept / Reject (Revert) buttons for live diffs
+                let effectivePillId = pillId.isEmpty ? diff.pillId : pillId
+                if !effectivePillId.isEmpty {
+                    switch diff.decisionState {
+                    case .pending:
+                        if diff.canRevert {
+                            Button(action: {
+                                if AppState.shared.rejectSessionDiff(id: diff.id, for: effectivePillId) {
+                                    SoundEngine.shared.play("blip")
+                                } else {
+                                    SoundEngine.shared.play("error")
+                                }
+                            }) {
+                                HStack(spacing: 2) {
+                                    Image(systemName: "arrow.uturn.backward")
+                                        .font(.system(size: 7.5, weight: .bold))
+                                    Text("Reject")
+                                        .font(.system(size: 9.5, weight: .semibold))
+                                }
+                                .foregroundColor(Color(hex: "#FCA5A5"))
+                                .padding(.horizontal, 6)
+                                .padding(.vertical, 2)
+                                .background(Color(hex: "#F4505E").opacity(0.18))
+                                .clipShape(Capsule())
+                                .overlay(Capsule().stroke(Color(hex: "#F4505E").opacity(0.4), lineWidth: 1))
+                            }
+                            .buttonStyle(.plain)
+                            .fixedSize()
+                        }
+                        Button(action: {
+                            AppState.shared.acceptSessionDiff(id: diff.id, for: effectivePillId)
+                            SoundEngine.shared.play("blip")
+                        }) {
+                            HStack(spacing: 2) {
+                                Image(systemName: "checkmark")
+                                    .font(.system(size: 7.5, weight: .bold))
+                                Text("Accept")
+                                    .font(.system(size: 9.5, weight: .semibold))
+                            }
+                            .foregroundColor(Color(hex: "#86EFAC"))
+                            .padding(.horizontal, 6)
+                            .padding(.vertical, 2)
+                            .background(Color(hex: "#22C55E").opacity(0.18))
+                            .clipShape(Capsule())
+                            .overlay(Capsule().stroke(Color(hex: "#22C55E").opacity(0.4), lineWidth: 1))
+                        }
+                        .buttonStyle(.plain)
+                        .fixedSize()
+                    case .accepted:
+                        HStack(spacing: 2) {
+                            Image(systemName: "checkmark")
+                                .font(.system(size: 7.5, weight: .bold))
+                            Text("Accepted")
+                                .font(.system(size: 9.5, weight: .semibold))
+                        }
+                        .foregroundColor(Color(hex: "#22C55E"))
+                        .padding(.horizontal, 5)
+                        .padding(.vertical, 1.5)
+                        .background(Color(hex: "#22C55E").opacity(0.12))
+                        .clipShape(Capsule())
+                        .fixedSize()
+                    case .rejected:
+                        HStack(spacing: 2) {
+                            Image(systemName: "arrow.uturn.backward")
+                                .font(.system(size: 7.5, weight: .bold))
+                            Text("Reverted")
+                                .font(.system(size: 9.5, weight: .semibold))
+                        }
+                        .foregroundColor(Color(hex: "#F4505E"))
+                        .padding(.horizontal, 5)
+                        .padding(.vertical, 1.5)
+                        .background(Color(hex: "#F4505E").opacity(0.12))
+                        .clipShape(Capsule())
+                        .fixedSize()
+                    }
+                }
+
                 Button(action: { openInEditor(diff) }) {
                     Image(systemName: "arrow.up.right")
                         .font(.system(size: 8, weight: .medium))
@@ -774,6 +1069,25 @@ struct DiffCardView: View {
     private func openInEditor(_ diff: FileDiff) {
         let path = diff.path
         #if !APPSTORE
+        let effectivePillId = pillId.isEmpty ? diff.pillId : pillId
+        if effectivePillId == "agent_antigravity" {
+            let agyBin = "/Applications/Antigravity.app/Contents/Resources/app/bin/antigravity"
+            if FileManager.default.fileExists(atPath: agyBin) {
+                let p = Process()
+                p.executableURL = URL(fileURLWithPath: agyBin)
+                p.arguments = diff.isNewFile ? ["-g", "\(path):1"] : [path]
+                try? p.run()
+                return
+            } else if FileManager.default.fileExists(atPath: "/Applications/Antigravity.app") {
+                NSWorkspace.shared.open(
+                    [URL(fileURLWithPath: path)],
+                    withApplicationAt: URL(fileURLWithPath: "/Applications/Antigravity.app"),
+                    configuration: .init(),
+                    completionHandler: nil
+                )
+                return
+            }
+        }
         let codePaths = ["/opt/homebrew/bin/code", "/usr/local/bin/code", "/usr/bin/code",
                          "\(NSHomeDirectory())/.nvm/current/bin/code"]
         if let codePath = codePaths.first(where: { FileManager.default.fileExists(atPath: $0) }) {
@@ -2137,6 +2451,12 @@ struct IntegrationCardView: View {
                         .foregroundColor(Color(hex: "#8E939C"))
                         .lineLimit(1).truncationMode(.tail)
                     Spacer(minLength: 2)
+                    if let diffs = appState.sessionDiffs[task.id], !diffs.isEmpty {
+                        SessionDiffHeaderBadge(diffs: diffs) {
+                            let target = diffs.last(where: { $0.decisionState == .pending && $0.canRevert }) ?? diffs.last!
+                            onDiffTap?(target.id)
+                        }
+                    }
                     if task.steps.count > 1 {
                         Text("\(min(task.stepIndex + 1, task.steps.count))/\(task.steps.count)")
                             .font(.system(size: 11))
@@ -2171,6 +2491,12 @@ struct IntegrationCardView: View {
                         .font(.system(size: 11))
                         .foregroundColor(Color(hex: "#8E939C"))
                     Spacer(minLength: 2)
+                    if let diffs = appState.sessionDiffs[task.id], !diffs.isEmpty {
+                        SessionDiffHeaderBadge(diffs: diffs) {
+                            let target = diffs.last(where: { $0.decisionState == .pending && $0.canRevert }) ?? diffs.last!
+                            onDiffTap?(target.id)
+                        }
+                    }
                 }
                 .padding(.top, 6)
                 .padding(.leading, 108)
@@ -2222,6 +2548,13 @@ struct IntegrationCardView: View {
                             .buttonStyle(.plain)
                         }
                         #endif
+                    } else if task.id == "agent_antigravity" {
+                        Button("Open Antigravity") {
+                            openAntigravityApp(cwd: task.sessionCwd)
+                        }
+                        .font(.system(size: 11, weight: .medium))
+                        .foregroundColor(Color(hex: task.color).opacity(0.85))
+                        .buttonStyle(.plain)
                     } else if let provider = ChatProvider(pillID: task.id) {
                         if isConfigured {
                             Button(String(format: String(localized: "Chat with %@"), task.name)) {
@@ -3753,6 +4086,7 @@ struct TickerView: View {
 
     var body: some View {
         let isActive = task?.state == .thinking || task?.state == .working
+        let pillId = task?.id ?? ""
         let rowADiffTap: (() -> Void)? = rowA.parseDiffStep().map { dp in { onDiffTap?(dp.diffId) } }
         let rowBDiffTap: (() -> Void)? = rowB.parseDiffStep().map { dp in { onDiffTap?(dp.diffId) } }
 
@@ -3761,18 +4095,18 @@ struct TickerView: View {
 
             // Row A: completed row — always rendered at phase=1 + completedScale
             // Row A never shows its shimmer (phase 1): it doesn't animate one either.
-            TickerRowView(text: rowA, phase: 1.0, isActive: isActive, shimmerPaused: true, onDiffTap: rowADiffTap)
+            TickerRowView(text: rowA, phase: 1.0, isActive: isActive, shimmerPaused: true, pillId: pillId, onDiffTap: rowADiffTap)
                 .scaleEffect(completedScale, anchor: .leading)
                 .offset(x: -10, y: rowAOffset)
                 .opacity(rowAOpacity)
 
             // Row B: current step → animates diagonally up-left, phase 0→1, scale 1→completedScale
-            TickerRowView(text: rowB, phase: rowBPhase, isActive: isActive, onDiffTap: rowBDiffTap)
+            TickerRowView(text: rowB, phase: rowBPhase, isActive: isActive, pillId: pillId, onDiffTap: rowBDiffTap)
                 .scaleEffect(1 - rowBPhase * (1 - completedScale), anchor: .leading)
                 .offset(x: -rowBPhase * 10, y: rowBOffset)
 
             // Row C: incoming new step — slides in from below at phase=0
-            TickerRowView(text: rowC, phase: 0.0, isActive: isActive)
+            TickerRowView(text: rowC, phase: 0.0, isActive: isActive, pillId: pillId)
                 .offset(y: rowCOffset)
                 .opacity(rowCOpacity)
         }
@@ -3853,7 +4187,9 @@ struct TickerRowView: View {
     let phase: Double   // 0 = current (shimmer, large), 1 = completed (dim, scaled down by caller)
     var isActive: Bool = true
     var shimmerPaused: Bool = false
+    var pillId: String = ""
     var onDiffTap: (() -> Void)? = nil
+    @ObservedObject private var appState = AppState.shared
 
     var body: some View {
         let chevronOpacity:   Double = isActive ? max(0, 1 - phase * 2)       : 0
@@ -3863,6 +4199,7 @@ struct TickerRowView: View {
         let staticColor = (!isActive && phase < 0.5) ? Color(hex: "#C9CDD4") : Color(hex: "#6B7079")
 
         if let dp = text.parseDiffStep() {
+            let liveDiff = appState.sessionDiffs[pillId]?.first(where: { $0.id == dp.diffId })
             HStack(spacing: 6) {
                 ZStack {
                     Image(systemName: "chevron.right")
@@ -3875,7 +4212,7 @@ struct TickerRowView: View {
                         .opacity(checkmarkOpacity)
                 }
                 .frame(width: 12, alignment: .center)
-                // Filename + counts
+                // Filename + counts (tapping opens full DiffCardView)
                 HStack(spacing: 0) {
                     ZStack(alignment: .leading) {
                         TickerShimmerText(text: dp.filename, paused: shimmerPaused || !isActive)
@@ -3899,11 +4236,61 @@ struct TickerRowView: View {
                             .fixedSize()
                     }
                 }
+                .contentShape(Rectangle())
+                .onTapGesture { onDiffTap?() }
+
+                if let diff = liveDiff, !pillId.isEmpty {
+                    switch diff.decisionState {
+                    case .pending:
+                        HStack(spacing: 3) {
+                            if diff.canRevert {
+                                Button(action: {
+                                    if appState.rejectSessionDiff(id: diff.id, for: pillId) {
+                                        SoundEngine.shared.play("blip")
+                                    } else {
+                                        SoundEngine.shared.play("error")
+                                    }
+                                }) {
+                                    Image(systemName: "arrow.uturn.backward")
+                                        .font(.system(size: 7.5, weight: .bold))
+                                        .foregroundColor(Color(hex: "#FCA5A5"))
+                                        .frame(width: 15, height: 15)
+                                        .background(Color(hex: "#F4505E").opacity(0.2))
+                                        .clipShape(Circle())
+                                }
+                                .buttonStyle(.plain)
+                                .help(String(localized: "Reject"))
+                            }
+                            Button(action: {
+                                appState.acceptSessionDiff(id: diff.id, for: pillId)
+                                SoundEngine.shared.play("blip")
+                            }) {
+                                Image(systemName: "checkmark")
+                                    .font(.system(size: 7.5, weight: .bold))
+                                    .foregroundColor(Color(hex: "#86EFAC"))
+                                    .frame(width: 15, height: 15)
+                                    .background(Color(hex: "#22C55E").opacity(0.2))
+                                    .clipShape(Circle())
+                            }
+                            .buttonStyle(.plain)
+                            .help(String(localized: "Accept"))
+                        }
+                        .fixedSize()
+                    case .accepted:
+                        Image(systemName: "checkmark.circle.fill")
+                            .font(.system(size: 10))
+                            .foregroundColor(Color(hex: "#22C55E"))
+                            .fixedSize()
+                    case .rejected:
+                        Image(systemName: "arrow.uturn.backward.circle.fill")
+                            .font(.system(size: 10))
+                            .foregroundColor(Color(hex: "#F4505E"))
+                            .fixedSize()
+                    }
+                }
             }
             .frame(height: 22, alignment: .leading)
             .frame(maxWidth: .infinity, alignment: .leading)
-            .contentShape(Rectangle())
-            .onTapGesture { onDiffTap?() }
         } else {
             HStack(spacing: 6) {
                 // Icon: chevron fades out first half, checkmark fades in second half

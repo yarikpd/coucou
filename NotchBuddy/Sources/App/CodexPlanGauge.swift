@@ -359,6 +359,37 @@ enum AntigravityPlanGauge {
         return nil
     }
 
+    /// Best-effort notification to Antigravity's local language_server when a file edit is accepted or rejected in Coucou.
+    static func notifyCodeEditDecision(path: String, conversationId: String, stepIndex: Int?, accepted: Bool) async {
+        let candidates = await Task.detached { discoverLocalServers() }.value
+        guard !candidates.isEmpty else { return }
+        let fileURI = URL(fileURLWithPath: path).absoluteString
+        let rpcPath = accepted
+            ? "/exa.language_server_pb.LanguageServerService/AcknowledgeCascadeCodeEdit"
+            : "/exa.language_server_pb.LanguageServerService/DiscardFileChanges"
+        var body: [String: Any] = [
+            "uri": fileURI,
+            "absolutePath": path,
+            "filePath": path,
+        ]
+        if !conversationId.isEmpty, conversationId != "unknown" {
+            body["cascadeId"] = conversationId
+            body["conversationId"] = conversationId
+        }
+        if let stepIndex {
+            body["stepIndex"] = stepIndex
+        }
+        for candidate in candidates {
+            for port in candidate.ports {
+                for scheme in ["http", "https"] {
+                    if await postConnectRPC(scheme: scheme, port: port, path: rpcPath, csrfToken: candidate.csrfToken, body: body) != nil {
+                        return
+                    }
+                }
+            }
+        }
+    }
+
     private static func discoverLocalServers() -> [ServerCandidate] {
         guard let psOutput = runCommand("/bin/ps", arguments: ["-ax", "-o", "pid=,command="]) else {
             return []
@@ -466,11 +497,15 @@ enum AntigravityPlanGauge {
         return nil
     }
 
-    private static func postConnectRPC(scheme: String, port: Int, path: String, csrfToken: String) async -> [String: Any]? {
+    private static func postConnectRPC(scheme: String, port: Int, path: String, csrfToken: String, body: [String: Any]? = nil) async -> [String: Any]? {
         guard let url = URL(string: "\(scheme)://127.0.0.1:\(port)\(path)") else { return nil }
         var req = URLRequest(url: url)
         req.httpMethod = "POST"
-        req.httpBody = Data("{}".utf8)
+        if let body, let jsonData = try? JSONSerialization.data(withJSONObject: body) {
+            req.httpBody = jsonData
+        } else {
+            req.httpBody = Data("{}".utf8)
+        }
         req.setValue("application/json", forHTTPHeaderField: "Content-Type")
         req.setValue("1", forHTTPHeaderField: "Connect-Protocol-Version")
         req.setValue(csrfToken, forHTTPHeaderField: "X-Codeium-Csrf-Token")

@@ -2050,6 +2050,9 @@ func islandSize(mode: IslandMode, view: IslandView,
         if view == .question, let h = QuestionLayout.height {
             return (IslandConst.expandedWidth, h)
         }
+        if view == .approval {
+            return (IslandConst.expandedWidth, layout.height + AppState.shared.approvalExtraHeight)
+        }
         #if !APPSTORE
         if view == .overview {
             let s = AppState.shared

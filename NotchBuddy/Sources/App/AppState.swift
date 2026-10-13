@@ -594,8 +594,21 @@ final class AppState: ObservableObject {
     // Chat conversation history
     @Published var chatHistory: [ChatMessage] = []
 
-    // Pending approval request from Claude Code hook
-    @Published var pendingApproval: ApprovalInfo? = nil
+    // Pending approval request from Claude Code / Antigravity / Codex hook
+    @Published var pendingApproval: ApprovalInfo? = nil {
+        didSet {
+            if pendingApproval?.id != oldValue?.id {
+                showingApprovalDiff = false
+            }
+        }
+    }
+
+    // Whether the live diff preview is expanded inside ApprovalView
+    @Published var showingApprovalDiff: Bool = false
+
+    var approvalExtraHeight: CGFloat {
+        (view == .approval && showingApprovalDiff && pendingApproval?.diff != nil) ? 84 : 0
+    }
 
     // Pending AskUserQuestion from Claude Code hook
     @Published var pendingQuestion: AskQuestion? = nil {
@@ -613,6 +626,7 @@ final class AppState: ObservableObject {
     func appendSessionDiff(_ diff: FileDiff, for pillId: String) -> Int {
         var d = diff
         d.id = nextDiffId
+        d.pillId = pillId
         nextDiffId += 1
         if sessionDiffs[pillId] == nil { sessionDiffs[pillId] = [] }
         sessionDiffs[pillId]!.append(d)
@@ -622,6 +636,51 @@ final class AppState: ObservableObject {
         }
         resetSessionDiffTimer(for: pillId)
         return d.id
+    }
+
+    func acceptSessionDiff(id diffId: Int, for pillId: String) {
+        guard let idx = sessionDiffs[pillId]?.firstIndex(where: { $0.id == diffId }) else { return }
+        objectWillChange.send()
+        sessionDiffs[pillId]![idx].decisionState = .accepted
+        let diff = sessionDiffs[pillId]![idx]
+        #if !APPSTORE
+        if pillId == "agent_antigravity" {
+            Task {
+                await AntigravityPlanGauge.notifyCodeEditDecision(
+                    path: diff.path,
+                    conversationId: diff.conversationId,
+                    stepIndex: diff.stepIndex,
+                    accepted: true
+                )
+            }
+        }
+        #endif
+    }
+
+    @discardableResult
+    func rejectSessionDiff(id diffId: Int, for pillId: String) -> Bool {
+        guard let idx = sessionDiffs[pillId]?.firstIndex(where: { $0.id == diffId }) else { return false }
+        let diff = sessionDiffs[pillId]![idx]
+        switch DiffEngine.revert(diff) {
+        case .success:
+            objectWillChange.send()
+            sessionDiffs[pillId]![idx].decisionState = .rejected
+            #if !APPSTORE
+            if pillId == "agent_antigravity" {
+                Task {
+                    await AntigravityPlanGauge.notifyCodeEditDecision(
+                        path: diff.path,
+                        conversationId: diff.conversationId,
+                        stepIndex: diff.stepIndex,
+                        accepted: false
+                    )
+                }
+            }
+            #endif
+            return true
+        case .failure:
+            return false
+        }
     }
 
     func clearSessionDiffs(for pillId: String) {

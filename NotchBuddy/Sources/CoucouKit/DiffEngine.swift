@@ -2,21 +2,32 @@ import Foundation
 
 // MARK: - Types
 
-struct DiffLine: Equatable {
-    enum Kind: Equatable { case context, added, removed }
+struct DiffLine: Equatable, Sendable {
+    enum Kind: Equatable, Sendable { case context, added, removed }
     var kind: Kind
     var text: String
     var origLine: Int   // 1-based; -1 for pure adds
     var newLine: Int    // 1-based; -1 for pure removes
 }
 
-struct DiffHunk: Equatable {
+struct DiffHunk: Equatable, Sendable {
     var origStart: Int
     var newStart: Int
     var lines: [DiffLine]
 }
 
-struct FileDiff: Equatable {
+struct FileEditChunk: Equatable, Sendable {
+    var oldString: String
+    var newString: String
+}
+
+enum DiffDecisionState: String, Equatable, Sendable {
+    case pending
+    case accepted
+    case rejected
+}
+
+struct FileDiff: Equatable, Sendable {
     var id: Int = 0         // stable identifier assigned by AppState.appendSessionDiff
     var path: String
     var added: Int
@@ -24,8 +35,19 @@ struct FileDiff: Equatable {
     var hunks: [DiffHunk]
     var tooLarge: Bool
     var isNewFile: Bool     // true when produced by DiffEngine.fromNew (Write tool)
+    var editChunks: [FileEditChunk] = []
+    var previousFileContent: String? = nil
+    var pillId: String = ""
+    var conversationId: String = ""
+    var stepIndex: Int? = nil
+    var decisionState: DiffDecisionState = .pending
 
     var name: String { URL(fileURLWithPath: path).lastPathComponent }
+
+    var canRevert: Bool {
+        guard decisionState == .pending else { return false }
+        return !editChunks.isEmpty || previousFileContent != nil || isNewFile
+    }
 
     static let maxBytes = 200 * 1024
     static let maxLines = 4000
@@ -37,25 +59,82 @@ enum DiffEngine {
 
     // MARK: Public API
 
+    /// Reverts a FileDiff on disk using its stored editChunks, previousFileContent, or new-file deletion.
+    static func revert(_ diff: FileDiff) -> Result<Void, Error> {
+        let url = URL(fileURLWithPath: diff.path)
+        do {
+            if !diff.editChunks.isEmpty {
+                var content = try String(contentsOf: url, encoding: .utf8)
+                for chunk in diff.editChunks.reversed() where !chunk.newString.isEmpty || !chunk.oldString.isEmpty {
+                    if let range = content.range(of: chunk.newString) {
+                        content.replaceSubrange(range, with: chunk.oldString)
+                    } else {
+                        let normContent = content.replacingOccurrences(of: "\r\n", with: "\n")
+                        let normNew = chunk.newString.replacingOccurrences(of: "\r\n", with: "\n")
+                        let normOld = chunk.oldString.replacingOccurrences(of: "\r\n", with: "\n")
+                        guard let normRange = normContent.range(of: normNew) else {
+                            return .failure(NSError(domain: "DiffEngine", code: 1, userInfo: [
+                                NSLocalizedDescriptionKey: "Edited block no longer matches file on disk."
+                            ]))
+                        }
+                        var updated = normContent
+                        updated.replaceSubrange(normRange, with: normOld)
+                        content = updated
+                    }
+                }
+                try content.write(to: url, atomically: true, encoding: .utf8)
+                return .success(())
+            } else if let prev = diff.previousFileContent {
+                try prev.write(to: url, atomically: true, encoding: .utf8)
+                return .success(())
+            } else if diff.isNewFile {
+                if FileManager.default.fileExists(atPath: diff.path) {
+                    try FileManager.default.removeItem(at: url)
+                }
+                return .success(())
+            } else {
+                return .failure(NSError(domain: "DiffEngine", code: 2, userInfo: [
+                    NSLocalizedDescriptionKey: "No revert data available for this diff."
+                ]))
+            }
+        } catch {
+            return .failure(error)
+        }
+    }
+
     static func fromEdit(old: String, new: String, path: String) -> FileDiff {
         // Size guard
         if old.utf8.count + new.utf8.count > FileDiff.maxBytes {
-            return countFallback(old: old, new: new, path: path, tooLarge: true)
+            var d = countFallback(old: old, new: new, path: path, tooLarge: true)
+            d.editChunks = [FileEditChunk(oldString: old, newString: new)]
+            return d
         }
         let oldLines = splitLines(old)
         let newLines = splitLines(new)
         if oldLines.count + newLines.count > FileDiff.maxLines {
-            return countFallback(old: old, new: new, path: path, tooLarge: true)
+            var d = countFallback(old: old, new: new, path: path, tooLarge: true)
+            d.editChunks = [FileEditChunk(oldString: old, newString: new)]
+            return d
         }
         // LCS is O(m*n) — bail out before quadratic blowup
         if oldLines.count * newLines.count > 1_000_000 {
-            return countFallback(old: old, new: new, path: path, tooLarge: true)
+            var d = countFallback(old: old, new: new, path: path, tooLarge: true)
+            d.editChunks = [FileEditChunk(oldString: old, newString: new)]
+            return d
         }
         let flat = buildDiffLines(oldLines: oldLines, newLines: newLines)
         let hunks = buildHunks(from: flat, context: 3)
         let added   = flat.filter { $0.kind == .added   }.count
         let removed = flat.filter { $0.kind == .removed }.count
-        return FileDiff(path: path, added: added, removed: removed, hunks: hunks, tooLarge: false, isNewFile: false)
+        return FileDiff(
+            path: path,
+            added: added,
+            removed: removed,
+            hunks: hunks,
+            tooLarge: false,
+            isNewFile: false,
+            editChunks: [FileEditChunk(oldString: old, newString: new)]
+        )
     }
 
     static func fromNew(content: String, path: String) -> FileDiff {
